@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.ping-indicator" path="/org/gnome/shell/extensions/ping-indicator/">
+    <!-- Configuración existente -->
+    <key name="refresh-interval" type="i">
+      <default>5</default>
+      <summary>Refresh interval</summary>
+    </key>
+    <key name="gateway-address" type="s">
+      <default>""</default>
+      <summary>Gateway IP</summary>
+    </key>
+    <key name="internet-address" type="s">
+      <default>"8.8.8.8"</default>
+      <summary>Internet server</summary>
+    </key>
+    
+    <!-- Nuevos umbrales para iconos -->
+    <key name="local-good-threshold" type="i">
+      <default>50</default>
+      <summary>Local good ping threshold</summary>
+    </key>
+    <key name="local-medium-threshold" type="i">
+      <default>100</default>
+      <summary>Local medium ping threshold</summary>
+    </key>
+    <key name="internet-good-threshold" type="i">
+      <default>100</default>
+      <summary>Internet good ping threshold</summary>
+    </key>
+    <key name="internet-medium-threshold" type="i">
+      <default>500</default>
+      <summary>Internet medium ping threshold</summary>
+    </key>
+  </schema>
+</schemalist>

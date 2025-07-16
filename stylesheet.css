@@ -1,8 +1,26 @@
+/* stylesheet.css */
 .dual-ping-box {
     spacing: 5px;
     padding: 0 5px;
+    /* Para debug: */
+    /* border: 1px solid rgba(255,0,0,0.3); */
 }
 
-.system-status-icon {
+.ping-local-icon,
+.ping-internet-icon {
     icon-size: 16px;
+    /* Animación suave para cambios */
+    transition: opacity 200ms ease-in-out;
+}
+
+/* Estado de advertencia */
+.ping-warning {
+    opacity: 0.8;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 0.4; }
+    100% { opacity: 0.8; }
 }
