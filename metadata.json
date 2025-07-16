@@ -1,0 +1,7 @@
+{
+  "name": "Ping Indicator",
+  "description": "Muestra latencia a router e internet",
+  "uuid": "ping-indicator@patriciorangles",
+  "shell-version": ["48.2"],
+  "version": 1
+}
