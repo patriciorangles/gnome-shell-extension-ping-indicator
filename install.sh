@@ -6,7 +6,10 @@ EXT_DIR="$HOME/.local/share/gnome-shell/extensions/ping-indicator@patriciorangle
 mkdir -p "$EXT_DIR/schemas"
 
 # Copiar archivos
-cp extension.js metadata.json prefs.js "$EXT_DIR/"
+cp extension.js netcheck.js metadata.json prefs.js "$EXT_DIR/"
+# rm+cp (no solo cp -r) para que los íconos que ya no existen en el repo
+# no se queden colgados en la instalación de versiones anteriores.
+rm -rf "$EXT_DIR/icons"
 cp -r icons "$EXT_DIR/"
 cp schemas/*.xml "$EXT_DIR/schemas/"
 

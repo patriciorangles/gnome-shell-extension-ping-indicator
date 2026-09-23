@@ -4,7 +4,11 @@
     <!-- Configuración existente -->
     <key name="refresh-interval" type="i">
       <default>5</default>
-      <summary>Refresh interval</summary>
+      <summary>Refresh interval (seconds) when everything looks stable</summary>
+    </key>
+    <key name="refresh-interval-unstable" type="i">
+      <default>2</default>
+      <summary>Refresh interval (seconds) while unstable/bad is detected — never slower than refresh-interval</summary>
     </key>
     <key name="gateway-address" type="s">
       <default>""</default>
@@ -31,6 +35,44 @@
     <key name="internet-medium-threshold" type="i">
       <default>500</default>
       <summary>Internet medium ping threshold</summary>
+    </key>
+
+    <!-- Ráfaga de pings (jitter / pérdida) -->
+    <key name="ping-count" type="i">
+      <default>5</default>
+      <summary>Pings per burst</summary>
+    </key>
+    <key name="local-loss-threshold" type="i">
+      <default>20</default>
+      <summary>Local packet loss %% to mark unstable</summary>
+    </key>
+    <key name="local-jitter-threshold" type="i">
+      <default>25</default>
+      <summary>Local jitter (mdev, ms) to mark unstable</summary>
+    </key>
+    <key name="internet-loss-threshold" type="i">
+      <default>20</default>
+      <summary>Internet packet loss %% to mark unstable</summary>
+    </key>
+    <key name="internet-jitter-threshold" type="i">
+      <default>30</default>
+      <summary>Internet jitter (mdev, ms) to mark unstable</summary>
+    </key>
+
+    <!-- Diagnóstico automático mtr -->
+    <key name="mtr-enabled" type="b">
+      <default>true</default>
+      <summary>Run automatic mtr diagnostic when unstable</summary>
+    </key>
+    <key name="mtr-cooldown" type="i">
+      <default>120</default>
+      <summary>Seconds between automatic mtr runs</summary>
+    </key>
+
+    <!-- Presentación -->
+    <key name="show-numeric-labels" type="b">
+      <default>true</default>
+      <summary>Show the latency value in ms next to each icon</summary>
     </key>
   </schema>
 </schemalist>

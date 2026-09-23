@@ -1,0 +1,489 @@
+<title>Iconos de Señal de Red</title>
+<style>
+  :root {
+    --bg: #f4f6f7;
+    --surface: #ffffff;
+    --surface-2: #edf1f2;
+    --text: #151a1d;
+    --text-muted: #5b6770;
+    --border: #dde3e6;
+    --accent: #0891b2;
+    --accent-soft: rgba(8,145,178,.10);
+
+    --good: #2ecc71;
+    --medium: #f39c12;
+    --bad: #e74c3c;
+    --unstable: #9b59b6;
+
+    --panel-bg: #1c1f20;
+    --panel-border: #000000;
+
+    --sans: 'Hanken Grotesk', -apple-system, "Segoe UI", sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1416;
+      --surface: #141d20;
+      --surface-2: #101718;
+      --text: #e6eef0;
+      --text-muted: #8fa0a6;
+      --border: #223035;
+      --accent: #22d3ee;
+      --accent-soft: rgba(34,211,238,.12);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1416;
+    --surface: #141d20;
+    --surface-2: #101718;
+    --text: #e6eef0;
+    --text-muted: #8fa0a6;
+    --border: #223035;
+    --accent: #22d3ee;
+    --accent-soft: rgba(34,211,238,.12);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.55;
+  }
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 2.75rem 1.25rem 4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-size: .72rem;
+    color: var(--accent);
+    margin: 0 0 .6rem;
+  }
+  h1 {
+    font-size: clamp(1.6rem, 3vw, 2.1rem);
+    font-weight: 700;
+    letter-spacing: -.01em;
+    text-wrap: balance;
+    margin: 0 0 .6rem;
+  }
+  h2 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    margin: 0 0 .3rem;
+  }
+  p { margin: 0; max-width: 66ch; }
+  .lede { color: var(--text-muted); font-size: 1rem; max-width: 62ch; }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: .05em .35em;
+  }
+
+  section.option {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  .option-head {
+    display: flex;
+    align-items: baseline;
+    gap: .7rem;
+    flex-wrap: wrap;
+  }
+  .tag {
+    font-family: var(--mono);
+    font-size: .68rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    padding: .2rem .55rem;
+    border-radius: 4px;
+  }
+  .tag.baseline { background: var(--surface-2); color: var(--text-muted); }
+  .tag.recommended { background: var(--accent-soft); color: var(--accent); }
+
+  .rationale { color: var(--text-muted); font-size: .94rem; }
+
+  /* Barra simulada de GNOME */
+  .panel-row {
+    display: flex;
+    gap: .9rem;
+    flex-wrap: wrap;
+  }
+  .panel-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .8rem .8rem 1rem;
+    flex: 1 1 200px;
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+  .panel-strip {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 10px;
+    gap: var(--icon-gap, 7px);
+    position: relative;
+  }
+  .panel-strip .icon-wrap {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .panel-strip svg { width: 18px; height: 18px; display: block; }
+  .badge-dot {
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--unstable);
+    border: 1.5px solid var(--panel-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .badge-dot svg { width: 7px; height: 7px; }
+
+  .state-label {
+    font-family: var(--mono);
+    font-size: .68rem;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  /* Fila de glifos ampliados */
+  .glyph-row {
+    display: flex;
+    gap: 1.4rem;
+    flex-wrap: wrap;
+  }
+  .glyph {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .4rem;
+  }
+  .glyph .swatch {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    background: var(--panel-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .glyph .swatch svg { width: 26px; height: 26px; }
+  .glyph .caption {
+    font-family: var(--mono);
+    font-size: .68rem;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  /* Diagrama de espaciado */
+  .spacing-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+  .dim-strip {
+    background: var(--panel-bg);
+    border-radius: 6px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+  }
+  .dim-strip .icon-wrap { position: relative; width: 18px; height: 18px; }
+  .dim-strip svg { width: 18px; height: 18px; }
+  .dim-line {
+    position: absolute;
+    top: -10px;
+    height: 8px;
+    border-left: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    border-top: 1px solid var(--accent);
+  }
+  .dim-label {
+    font-family: var(--mono);
+    font-size: .66rem;
+    color: var(--accent);
+    position: absolute;
+    top: -24px;
+    white-space: nowrap;
+  }
+  .spacing-notes { display: flex; flex-direction: column; gap: .4rem; font-size: .88rem; color: var(--text-muted); max-width: 60ch; }
+  .spacing-notes li { margin-left: 1.1rem; }
+
+  .recommend-card {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+  }
+  .recommend-card h3 { margin: 0; font-size: 1rem; }
+  .recommend-card p { color: var(--text); font-size: .92rem; }
+
+  footer.foot {
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+    font-family: var(--mono);
+    font-size: .74rem;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 480px) {
+    .panel-row, .glyph-row { flex-direction: column; }
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Definiciones de glifos reutilizables -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <g id="wifi-router">
+      <circle cx="12" cy="18" r="2.1" />
+      <path d="M7 14a7.07 7.07 0 0 1 10 0" fill="none" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M3.3 10.3a12 12 0 0 1 17.4 0" fill="none" stroke-width="2.4" stroke-linecap="round"/>
+    </g>
+    <g id="globe-internet">
+      <circle cx="12" cy="12" r="9" fill="none" stroke-width="2.1"/>
+      <ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke-width="2.1"/>
+      <line x1="3" y1="12" x2="21" y2="12" stroke-width="2.1"/>
+    </g>
+    <g id="pulse-badge">
+      <path d="M2.5 12h3.6l1.6-5 3.6 10 1.6-5h4.6" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="diamond">
+      <path d="M12 2L2 12 12 22 22 12Z"/>
+    </g>
+    <g id="circle-shape">
+      <circle cx="12" cy="12" r="10"/>
+    </g>
+  </defs>
+</svg>
+
+<div class="page">
+
+  <header>
+    <p class="eyebrow">Ping Indicator · comparativo de íconos</p>
+    <h1>Que se note cuándo hay algo que ver</h1>
+    <p class="lede">Hoy, "todo bien" y "todo bien pero antes de este cambio" se ven exactamente igual — el color es la única señal, y cuando no pasa nada, no cambia nada a la vista. Estas opciones separan la inestabilidad del semáforo de latencia, para que aparezca algo nuevo justo cuando importa.</p>
+  </header>
+
+  <section class="option">
+    <div class="option-head">
+      <h2>Antes</h2>
+      <span class="tag baseline">Línea base actual</span>
+    </div>
+    <p class="rationale">Diamante (router) y círculo (internet), color único por estado. Sin distinción visual para "inestable" más allá de un cuarto color morado — hay que memorizar 4 colores para saber qué significa cada uno.</p>
+    <div class="panel-row">
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#diamond" fill="var(--good)"/></svg></div>
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#circle-shape" fill="var(--good)"/></svg></div>
+        </div>
+        <div class="state-label">Todo bien</div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#diamond" fill="var(--good)"/></svg></div>
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#circle-shape" fill="var(--unstable)"/></svg></div>
+        </div>
+        <div class="state-label">Internet inestable</div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#diamond" fill="var(--bad)"/></svg></div>
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#circle-shape" fill="var(--bad)"/></svg></div>
+        </div>
+        <div class="state-label">Crítico</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="option">
+    <div class="option-head">
+      <h2>Opción A — Glifos + insignia de pulso</h2>
+      <span class="tag recommended">Recomendada</span>
+    </div>
+    <p class="rationale">Un ícono de WiFi para el router y un globo para internet — reconocibles sin leer el tooltip. El color sigue marcando bueno/medio/malo. La inestabilidad ya no es un color más: es una insignia morada con un pulso (♥ el símbolo natural de "jitter") que <strong>aparece encima del ícono afectado solo cuando hace falta</strong> — el resto del tiempo la barra se ve exactamente igual de limpia que hoy.</p>
+    <div class="glyph-row">
+      <div class="glyph">
+        <div class="swatch"><svg viewBox="0 0 24 24"><use href="#wifi-router" stroke="var(--good)" fill="var(--good)"/></svg></div>
+        <div class="caption">Router · bueno</div>
+      </div>
+      <div class="glyph">
+        <div class="swatch"><svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--medium)"/></svg></div>
+        <div class="caption">Internet · medio</div>
+      </div>
+      <div class="glyph">
+        <div class="swatch"><svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--bad)"/></svg></div>
+        <div class="caption">Internet · crítico</div>
+      </div>
+      <div class="glyph">
+        <div class="swatch" style="background:var(--unstable)"><svg viewBox="0 0 24 24"><use href="#pulse-badge" stroke="white"/></svg></div>
+        <div class="caption">Insignia · inestable</div>
+      </div>
+    </div>
+    <div class="panel-row">
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#wifi-router" stroke="var(--good)" fill="var(--good)"/></svg></div>
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--good)"/></svg></div>
+        </div>
+        <div class="state-label">Todo bien</div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#wifi-router" stroke="var(--good)" fill="var(--good)"/></svg></div>
+          <div class="icon-wrap">
+            <svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--good)"/></svg>
+            <div class="badge-dot"><svg viewBox="0 0 24 24"><use href="#pulse-badge" stroke="white"/></svg></div>
+          </div>
+        </div>
+        <div class="state-label">Internet inestable<br>(promedio bien igual)</div>
+      </div>
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#wifi-router" stroke="var(--bad)" fill="var(--bad)"/></svg></div>
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--bad)"/></svg></div>
+        </div>
+        <div class="state-label">Crítico</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="option">
+    <div class="option-head">
+      <h2>Opción B — Barras de señal</h2>
+      <span class="tag baseline">Alternativa</span>
+    </div>
+    <p class="rationale">Metáfora de barras de cobertura: la cantidad de barras encendidas refuerza el color (útil si te cuesta distinguir verde/amarillo/rojo a simple vista). La inestabilidad se marca con un punto sobre las barras en vez del pulso.</p>
+    <div class="glyph-row">
+      <div class="glyph">
+        <div class="swatch">
+          <svg viewBox="0 0 24 24">
+            <rect x="1" y="16" width="4" height="6" rx="1" fill="var(--good)"/>
+            <rect x="7" y="12" width="4" height="10" rx="1" fill="var(--good)"/>
+            <rect x="13" y="8" width="4" height="14" rx="1" fill="var(--good)"/>
+            <rect x="19" y="4" width="4" height="18" rx="1" fill="var(--good)"/>
+          </svg>
+        </div>
+        <div class="caption">4 barras · bueno</div>
+      </div>
+      <div class="glyph">
+        <div class="swatch">
+          <svg viewBox="0 0 24 24">
+            <rect x="1" y="16" width="4" height="6" rx="1" fill="var(--medium)"/>
+            <rect x="7" y="12" width="4" height="10" rx="1" fill="var(--medium)"/>
+            <rect x="13" y="8" width="4" height="14" rx="1" fill="var(--border)"/>
+            <rect x="19" y="4" width="4" height="18" rx="1" fill="var(--border)"/>
+          </svg>
+        </div>
+        <div class="caption">2 barras · medio</div>
+      </div>
+      <div class="glyph">
+        <div class="swatch">
+          <svg viewBox="0 0 24 24">
+            <rect x="1" y="16" width="4" height="6" rx="1" fill="var(--bad)"/>
+            <rect x="7" y="12" width="4" height="10" rx="1" fill="var(--border)"/>
+            <rect x="13" y="8" width="4" height="14" rx="1" fill="var(--border)"/>
+            <rect x="19" y="4" width="4" height="18" rx="1" fill="var(--border)"/>
+          </svg>
+        </div>
+        <div class="caption">1 barra · crítico</div>
+      </div>
+    </div>
+    <div class="panel-row">
+      <div class="panel-card">
+        <div class="panel-strip">
+          <div class="icon-wrap">
+            <svg viewBox="0 0 24 24">
+              <rect x="1" y="16" width="4" height="6" rx="1" fill="var(--good)"/>
+              <rect x="7" y="12" width="4" height="10" rx="1" fill="var(--good)"/>
+              <rect x="13" y="8" width="4" height="14" rx="1" fill="var(--good)"/>
+              <rect x="19" y="4" width="4" height="18" rx="1" fill="var(--good)"/>
+            </svg>
+            <div class="badge-dot"><svg viewBox="0 0 24 24"><use href="#pulse-badge" stroke="white"/></svg></div>
+          </div>
+          <div class="icon-wrap">
+            <svg viewBox="0 0 24 24">
+              <rect x="1" y="16" width="4" height="6" rx="1" fill="var(--good)"/>
+              <rect x="7" y="12" width="4" height="10" rx="1" fill="var(--good)"/>
+              <rect x="13" y="8" width="4" height="14" rx="1" fill="var(--good)"/>
+              <rect x="19" y="4" width="4" height="18" rx="1" fill="var(--good)"/>
+            </svg>
+          </div>
+        </div>
+        <div class="state-label">Router inestable</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="option">
+    <h2>Espaciado</h2>
+    <div class="spacing-diagram">
+      <div class="dim-strip">
+        <div class="dim-line" style="left:14px; width:18px;"></div>
+        <div class="dim-label" style="left:8px;">18px</div>
+        <div class="icon-wrap"><svg viewBox="0 0 24 24"><use href="#wifi-router" stroke="var(--good)" fill="var(--good)"/></svg></div>
+        <div class="icon-wrap">
+          <svg viewBox="0 0 24 24"><use href="#globe-internet" stroke="var(--good)"/></svg>
+          <div class="badge-dot"><svg viewBox="0 0 24 24"><use href="#pulse-badge" stroke="white"/></svg></div>
+        </div>
+      </div>
+      <ul class="spacing-notes">
+        <li>Los 2 íconos principales se quedan en 18px, con <code>gap: 8px</code> entre ellos (un poco más que los 5px actuales — respiran mejor ahora que las formas son más "llenas" que un diamante/círculo simple).</li>
+        <li>La insignia mide 11px y se monta con posición absoluta en la esquina — <strong>no suma ancho a la barra</strong>, así que el espacio total ocupado es idéntico con o sin inestabilidad.</li>
+        <li>El borde de 1.5px alrededor de la insignia usa el color de fondo del panel, para que "corte" visualmente el ícono de abajo en vez de verse pegada encima.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="recommend-card">
+    <h3>Mi recomendación</h3>
+    <p>Opción A. El WiFi/globo se entienden sin pensar, y separar "inestable" del semáforo de color resuelve exactamente lo que notaste hoy: ahora mismo no hay nada nuevo que ver porque todo está bien — con la insignia, vas a ver algo <em>aparecer</em> la próxima vez que sí lo esté, en vez de tener que fijarte si el mismo círculo cambió de morado a rojo.</p>
+  </div>
+
+  <footer class="foot">
+    Comparativo para gnome-shell-extension-ping-indicator · íconos SVG a escala real de panel (18px) y ampliados (26px) para el detalle.
+  </footer>
+
+</div>

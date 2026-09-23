@@ -1,9 +1,9 @@
 {
   "name": "Ping Indicator",
-  "description": "Muestra latencia a router e internet",
+  "description": "Muestra latencia, pérdida y jitter a router e internet, con diagnóstico automático (mtr) cuando se detecta inestabilidad",
   "uuid": "ping-indicator@patriciorangles",
   "shell-version": ["48.2"],
-  "version": 2,
+  "version": 4,
   "settings-schema": "org.gnome.shell.extensions.ping-indicator",
   "url": "https://github.com/patriciorangles/gnome-shell-extension-ping-indicator",
   "dependencies": [

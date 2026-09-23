@@ -1,9 +1,24 @@
 /* stylesheet.css */
 .dual-ping-box {
-    spacing: 5px;
+    /* Espacio ENTRE el grupo de router y el de internet — más ancho que el
+       espacio interno de cada grupo (ver .ping-group), para que se note que
+       son 2 cosas distintas sin dejar un hueco exagerado. */
+    spacing: 6px;
     padding: 0 5px;
     /* Para debug: */
     /* border: 1px solid rgba(255,0,0,0.3); */
+}
+
+.ping-group {
+    /* Ícono + número bien pegados, como un solo bloque. */
+    spacing: 2px;
+}
+
+.ping-label {
+    font-feature-settings: "tnum";
+    /* Para que combine con el tamaño de CPU/batería del panel, no con el
+       tamaño de texto normal (que se ve más grande al lado de esos). */
+    font-size: 0.8em;
 }
 
 .ping-local-icon,
