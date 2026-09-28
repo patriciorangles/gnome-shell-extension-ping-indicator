@@ -6,7 +6,7 @@
 // en segundos, en vez de tener que cerrar sesión para descubrirlo.
 
 import GLib from 'gi://GLib';
-import {pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable} from './netcheck.js';
+import {runCommandAsync, pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable} from './netcheck.js';
 
 // gjs standalone no mantiene vivo el proceso para I/O async por su cuenta
 // (a diferencia de dentro de GNOME Shell, que ya tiene su propio bucle
@@ -57,6 +57,18 @@ HOST: patomasterhpdeb             Loss%   Snt   Last   Avg  Best  Wrst StDev
     const worst = findWorstHop(hops);
     print(`Peor salto: ${JSON.stringify(worst)}`);
     assert(worst.host.includes('cloudflare-uio.nap.ec'), 'debe identificar el salto con 20% de pérdida, no el gateway (hop 1)');
+
+    print('\n== 5. runCommandAsync() con timeout — un comando colgado no debe congelar el ciclo ==');
+    // Antes de este fix, esto se comportaba igual que el bug real detectado el
+    // 2026-09-28: un `ping`/`mtr` colgado dejaba la promesa sin resolver para
+    // siempre (el widget se congeló 6 minutos completos ese día). `sleep 5`
+    // con un timeout de 1s simula ese cuelgue de forma controlada.
+    const before = GLib.get_monotonic_time();
+    const hungResult = await runCommandAsync(['sleep', '5'], 1);
+    const elapsedSeconds = (GLib.get_monotonic_time() - before) / 1e6;
+    print(`Resultado: ${hungResult}, tiempo real: ${elapsedSeconds.toFixed(2)}s`);
+    assert(hungResult === null, 'un comando que no responde a tiempo debe devolver null, no colgarse');
+    assert(elapsedSeconds < 3, `debe cortar cerca del timeout (1s), no esperar los 5s completos (tardó ${elapsedSeconds.toFixed(2)}s)`);
 
     print('\nTodo pasó ✅');
 }

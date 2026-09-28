@@ -339,7 +339,9 @@ class PingIndicator extends PanelMenu.Button {
         this._lastMtrTime = now;
         this._mtrRunning = true;
 
-        runCommandAsync(['mtr', '-r', '-w', '-b', '-z', '-c', '6', '-i', '1', host]).then(output => {
+        // 20s de margen: mtr con -c 6 -i 1 tarda ~6-7s en el caso normal,
+        // pero saltos con DNS lento o mucha pérdida pueden estirarlo bastante.
+        runCommandAsync(['mtr', '-r', '-w', '-b', '-z', '-c', '6', '-i', '1', host], 20).then(output => {
             this._mtrRunning = false;
             if (output === null) {
                 // mtr no instalado o falló: no seguir intentando cada ciclo.
