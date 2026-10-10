@@ -45,6 +45,15 @@ class PingIndicator extends PanelMenu.Button {
         this._extensionPath = extensionPath;
         this._settings = settings;
 
+        // Se pone en true la primera vez que tocamos un widget ya destruido
+        // (típicamente porque gnome-shell lo destruyó al reconstruir la UI
+        // tras un congelamiento de GPU, sin pasar por nuestro disable()).
+        // Una vez detectado, cortamos el ciclo de actualización en vez de
+        // seguir lanzando la misma excepción sin parar — eso fue lo que
+        // generó más de 4 millones de líneas de log en 9 días (ver
+        // project_ping_indicator_bugs.md, Bug 1).
+        this._disposed = false;
+
         // Almacenar los últimos valores
         this._lastLocalStats = null;
         this._lastInternetStats = null;
@@ -249,6 +258,7 @@ class PingIndicator extends PanelMenu.Button {
     // submenú en cada log es barato y mucho más simple que ir actualizando
     // items existentes uno por uno.
     _rebuildHistoryMenu() {
+        if (this._disposed) return;
         this._historySubMenu.menu.removeAll();
         this._historySubMenu.label.text = `Novedades (${this._history.length})`;
 
@@ -290,6 +300,7 @@ class PingIndicator extends PanelMenu.Button {
     }
 
     async _updateIcons() {
+        if (this._disposed) return;
         const gatewayAddress = this._settings.get_string('gateway-address');
         const internetAddress = this._settings.get_string('internet-address');
         const pingCount = Math.max(1, this._settings.get_int('ping-count'));
@@ -311,8 +322,13 @@ class PingIndicator extends PanelMenu.Button {
         this._lastInternetStats = internetStats;
         this._lastUpdate = new Date();
 
-        this._updateIconsAndTooltip();
-        this._maybeRunMtr(internetAddress || 'google.com');
+        try {
+            this._updateIconsAndTooltip();
+            this._maybeRunMtr(internetAddress || 'google.com');
+        } catch (e) {
+            this._onDisposedWidget(e);
+            return;
+        }
         this._scheduleNextUpdate();
     }
 
@@ -343,24 +359,29 @@ class PingIndicator extends PanelMenu.Button {
         // pero saltos con DNS lento o mucha pérdida pueden estirarlo bastante.
         runCommandAsync(['mtr', '-r', '-w', '-b', '-z', '-c', '6', '-i', '1', host], 20).then(output => {
             this._mtrRunning = false;
+            if (this._disposed) return;
             if (output === null) {
                 // mtr no instalado o falló: no seguir intentando cada ciclo.
                 this._mtrAvailable = false;
                 return;
             }
-            const hops = parseMtrHops(output);
-            const worst = findWorstHop(hops);
-            if (worst && (worst.loss > 0 || worst.stdev >= this._settings.get_int('internet-jitter-threshold'))) {
-                this._lastMtrSummary = `${worst.host} — ${worst.loss}% pérdida, jitter ${worst.stdev.toFixed(1)}ms (prom ${worst.avg.toFixed(1)}ms)`;
-                // Pérdida alta en el salto responsable = probable corte real,
-                // no solo lentitud puntual -> error en vez de warning.
-                const level = worst.loss >= 50 ? 'error' : 'warning';
-                this._logEvent(level, `Diagnóstico mtr — ${this._lastMtrSummary}`);
-            } else {
-                this._lastMtrSummary = 'sin salto responsable identificado en esta pasada (puede ser muy intermitente)';
-                this._logEvent('warning', `Diagnóstico mtr — ${this._lastMtrSummary}`);
+            try {
+                const hops = parseMtrHops(output);
+                const worst = findWorstHop(hops);
+                if (worst && (worst.loss > 0 || worst.stdev >= this._settings.get_int('internet-jitter-threshold'))) {
+                    this._lastMtrSummary = `${worst.host} — ${worst.loss}% pérdida, jitter ${worst.stdev.toFixed(1)}ms (prom ${worst.avg.toFixed(1)}ms)`;
+                    // Pérdida alta en el salto responsable = probable corte real,
+                    // no solo lentitud puntual -> error en vez de warning.
+                    const level = worst.loss >= 50 ? 'error' : 'warning';
+                    this._logEvent(level, `Diagnóstico mtr — ${this._lastMtrSummary}`);
+                } else {
+                    this._lastMtrSummary = 'sin salto responsable identificado en esta pasada (puede ser muy intermitente)';
+                    this._logEvent('warning', `Diagnóstico mtr — ${this._lastMtrSummary}`);
+                }
+                this._updateIconsAndTooltip();
+            } catch (e) {
+                this._onDisposedWidget(e);
             }
-            this._updateIconsAndTooltip();
         });
     }
 
@@ -456,7 +477,13 @@ class PingIndicator extends PanelMenu.Button {
             GLib.PRIORITY_DEFAULT,
             1,
             () => {
-                this._updateDynamicTooltip();
+                if (this._disposed) return GLib.SOURCE_REMOVE;
+                try {
+                    this._updateDynamicTooltip();
+                } catch (e) {
+                    this._onDisposedWidget(e);
+                    return GLib.SOURCE_REMOVE;
+                }
                 return GLib.SOURCE_CONTINUE;
             }
         );
@@ -481,6 +508,17 @@ class PingIndicator extends PanelMenu.Button {
         }
 
         this.setTooltipText(tooltipText);
+    }
+
+    // Se llama la primera (y única) vez que una actualización choca con un
+    // widget ya destruido. Registra el hecho UNA sola vez y corta todos los
+    // temporizadores — sin esto, cada ciclo repite la misma excepción sin
+    // parar hasta el próximo reinicio de gnome-shell.
+    _onDisposedWidget(e) {
+        if (this._disposed) return;
+        this._disposed = true;
+        console.error(`[ping-indicator] Widget destruido externamente, deteniendo actualizaciones: ${e}`);
+        this.stop();
     }
 
     stop() {
