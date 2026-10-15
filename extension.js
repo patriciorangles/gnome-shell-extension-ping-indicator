@@ -136,6 +136,20 @@ class PingIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._historySubMenu);
         this._rebuildHistoryMenu();
 
+            // Detección real de "widget destruido externamente" (p.ej. por
+            // gnome-shell reconstruyendo la UI tras un congelamiento de GPU,
+            // sin pasar por nuestro disable()). Esto NO se puede detectar con
+            // try/catch: asignar una propiedad a un St.Widget ya destruido no
+            // lanza excepción, solo registra una advertencia en el log y no
+            // hace nada — por eso el intento anterior (capturar excepciones)
+            // nunca se activaba y el log se seguía llenando. La señal
+            // 'destroy' de GObject sí es confiable: se dispara siempre que el
+            // objeto muere, lo haya matado quien lo haya matado.
+            for (const widget of [this, this.localIcon, this.internetIcon,
+                this.localLabel, this.internetLabel, this.statusItem, this._historySubMenu]) {
+                widget.connect('destroy', () => this._onDisposedWidget('destroy signal'));
+            }
+
             // Tooltip dinámico
             this._dynamicTooltipId = 0;
             this.connect('notify::hover', () => {
