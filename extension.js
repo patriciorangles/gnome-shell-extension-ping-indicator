@@ -33,6 +33,9 @@ const DEFAULT_INTERNET_HOST = '8.8.8.8';
 // alrededor de un umbral (llegó a haber 104 avisos Excelente ↔ Aceptable por hora).
 const STATE_CONFIRMATIONS = 3;
 
+// Segundos que dura la vista previa de la insignia ("Probar ícono").
+const PREVIEW_SECONDS = 8;
+
 const TIER_RANK = {good: 0, medium: 1, bad: 2};
 const TIER_LABEL = {good: 'Excelente', medium: 'Aceptable', bad: 'Crítico'};
 const LEVEL_ICON = {info: 'ℹ', warning: '⚠', error: '⛔'};
@@ -100,6 +103,10 @@ class PingIndicator extends PanelMenu.Button {
         this._roamEvents = [];
         this._wifiFlapping = false;
         this._wifiFlapCount = 0;
+        // Vista previa de la insignia (opción "Probar ícono" del submenú Wi-Fi):
+        // la muestra unos segundos sin tocar el estado real de rebote.
+        this._badgePreview = false;
+        this._badgePreviewId = 0;
 
         this.box = new St.BoxLayout({
             style_class: 'dual-ping-box'
@@ -711,7 +718,31 @@ class PingIndicator extends PanelMenu.Button {
                 this._logEvent('info', 'Wi-Fi: dejó de saltar entre puntos de acceso');
             }
         }
-        this.roamIcon.visible = this._wifiFlapping;
+        this.roamIcon.visible = this._wifiFlapping || this._badgePreview;
+    }
+
+    // Muestra la insignia de rebote unos segundos, solo para ver cómo luce y
+    // dónde queda en el panel: no registra eventos ni cambia el estado real.
+    _previewBadge() {
+        if (this._disposed) return;
+        if (this._badgePreviewId) {
+            GLib.source_remove(this._badgePreviewId);
+            this._badgePreviewId = 0;
+        }
+        this._badgePreview = true;
+        this.roamIcon.visible = true;
+        this._badgePreviewId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, PREVIEW_SECONDS, () => {
+            this._badgePreviewId = 0;
+            this._badgePreview = false;
+            if (!this._disposed) {
+                try {
+                    this._updateWifiBadge();
+                } catch (e) {
+                    this._onDisposedWidget(e);
+                }
+            }
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _wifiTooltipLine() {
@@ -793,6 +824,11 @@ class PingIndicator extends PanelMenu.Button {
                 addInfo(`${g.ssid} — ${g.best}%${g.aps.length > 1 ? ` · ${g.aps.length} puntos de acceso` : ''}`);
             }
         }
+
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const preview = new PopupMenu.PopupMenuItem(`Probar ícono de rebote (${PREVIEW_SECONDS} s)`);
+        preview.connect('activate', () => this._previewBadge());
+        menu.addMenuItem(preview);
     }
 
     // bssid = null vuelve a modo automático.
@@ -856,6 +892,10 @@ class PingIndicator extends PanelMenu.Button {
         if (this._wifiLostTimerId) {
             GLib.source_remove(this._wifiLostTimerId);
             this._wifiLostTimerId = 0;
+        }
+        if (this._badgePreviewId) {
+            GLib.source_remove(this._badgePreviewId);
+            this._badgePreviewId = 0;
         }
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
