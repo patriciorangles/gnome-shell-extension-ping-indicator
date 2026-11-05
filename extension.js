@@ -11,11 +11,28 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import {runCommandAsync, pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable} from './netcheck.js';
+import {runCommandAsync, pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable, StateDebouncer} from './netcheck.js';
+import {detectFlapping, groupByNetwork, sameDevice, deviceNumbers} from './wifi-logic.js';
+// wifi.js (la parte que habla con NetworkManager) se carga aparte y con
+// try/catch en _startWifi(): si algo falla ahí, el ping sigue funcionando.
 
 // Orden de severidad de cada tier, para saber si un cambio es una mejora o
 // un empeoramiento (y decidir el nivel del log: info al mejorar, warning al
 // empeorar).
+// Señal (%) por debajo de la cual el punto de acceso fijo se considera "perdido".
+const PIN_RELEASE_MIN_STRENGTH = 15;
+
+// Destino de internet cuando el ajuste está vacío. Una IP y no un nombre: con
+// "google.com" cada ping dependía del DNS, y un DNS lento colgaba la ráfaga
+// (hubo cientos de "no respondió, se forzó a terminar" por hora).
+const DEFAULT_INTERNET_HOST = '8.8.8.8';
+
+// Mediciones seguidas necesarias para que un cambio de estado (semáforo o
+// inestabilidad) llegue a "Novedades" y al journal. El ícono sigue cambiando en
+// tiempo real; esto solo evita llenar el historial cuando una métrica oscila
+// alrededor de un umbral (llegó a haber 104 avisos Excelente ↔ Aceptable por hora).
+const STATE_CONFIRMATIONS = 3;
+
 const TIER_RANK = {good: 0, medium: 1, bad: 2};
 const TIER_LABEL = {good: 'Excelente', medium: 'Aceptable', bad: 'Crítico'};
 const LEVEL_ICON = {info: 'ℹ', warning: '⚠', error: '⛔'};
@@ -71,10 +88,18 @@ class PingIndicator extends PanelMenu.Button {
         // genera un falso "cambio".
         this._history = [];
         this._maxHistory = 30;
-        this._prevLocalTier = null;
-        this._prevInternetTier = null;
-        this._prevLocalUnstable = false;
-        this._prevInternetUnstable = false;
+        this._localTierDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
+        this._internetTierDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
+        this._localUnstableDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
+        this._internetUnstableDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
+
+        // Wi-Fi: saltos entre puntos de acceso con el mismo nombre (ver wifi.js).
+        // this._roamEvents guarda solo los saltos dentro de la ventana de
+        // detección; this._wifiFlapping es true mientras haya "rebote".
+        this._wifi = null;
+        this._roamEvents = [];
+        this._wifiFlapping = false;
+        this._wifiFlapCount = 0;
 
         this.box = new St.BoxLayout({
             style_class: 'dual-ping-box'
@@ -110,8 +135,20 @@ class PingIndicator extends PanelMenu.Button {
         this.internetGroup.add_child(this.internetIcon);
         this.internetGroup.add_child(this.internetLabel);
 
+        // Insignia que solo aparece mientras la laptop salta entre puntos de
+        // acceso de la misma red (ver _updateWifiBadge).
+        this.roamIcon = new St.Icon({
+            icon_size: 18,
+            style_class: 'system-status-icon',
+            visible: false
+        });
+        this.roamIcon.set_gicon(
+            Gio.icon_new_for_string(`${this._extensionPath}/icons/wifi-roaming.svg`)
+        );
+
         this.box.add_child(this.localGroup);
         this.box.add_child(this.internetGroup);
+        this.box.add_child(this.roamIcon);
         this.add_child(this.box);
 
         // Crear menú de configuración (forma compatible)
@@ -130,6 +167,18 @@ class PingIndicator extends PanelMenu.Button {
         this.statusItem.label.clutter_text.set_line_wrap(true);
         this.menu.addMenuItem(this.statusItem);
 
+        // Submenú Wi-Fi: puntos de acceso visibles, y fijar uno o dejar en
+        // automático. Se reconstruye cada vez que se abre el menú (la señal y
+        // las redes visibles cambian constantemente, no vale la pena mantenerlo
+        // al día en segundo plano). Oculto hasta que el monitoreo arranque.
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._wifiSubMenu = new PopupMenu.PopupSubMenuMenuItem('Wi-Fi');
+        this._wifiSubMenu.visible = false;
+        this.menu.addMenuItem(this._wifiSubMenu);
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open) this._rebuildWifiMenu();
+        });
+
         // Separador + submenú de novedades (historial de cambios de estado)
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._historySubMenu = new PopupMenu.PopupSubMenuMenuItem('Novedades (0)');
@@ -146,7 +195,8 @@ class PingIndicator extends PanelMenu.Button {
             // 'destroy' de GObject sí es confiable: se dispara siempre que el
             // objeto muere, lo haya matado quien lo haya matado.
             for (const widget of [this, this.localIcon, this.internetIcon,
-                this.localLabel, this.internetLabel, this.statusItem, this._historySubMenu]) {
+                this.localLabel, this.internetLabel, this.statusItem, this._historySubMenu,
+                this.roamIcon, this._wifiSubMenu]) {
                 widget.connect('destroy', () => this._onDisposedWidget('destroy signal'));
             }
 
@@ -188,10 +238,19 @@ class PingIndicator extends PanelMenu.Button {
                 'internet-good-threshold', 'internet-medium-threshold',
                 'local-loss-threshold', 'local-jitter-threshold',
                 'internet-loss-threshold', 'internet-jitter-threshold',
+                'roam-flap-threshold', 'roam-flap-window',
             ];
             this._cosmeticHandlers = cosmeticKeys.map(key =>
                 this._settings.connect(`changed::${key}`, () => this._updateIconsAndTooltip())
             );
+
+            // Monitoreo de saltos entre puntos de acceso Wi-Fi: se puede
+            // apagar/encender desde las preferencias sin reiniciar nada.
+            this._wifiHandler = this._settings.connect(
+                'changed::wifi-watch-enabled',
+                () => this._startWifi()
+            );
+            this._startWifi();
     }
 
     // Cadencia adaptable: rápido mientras hay un problema detectado, tranquilo
@@ -214,6 +273,11 @@ class PingIndicator extends PanelMenu.Button {
             GLib.PRIORITY_DEFAULT,
             interval,
             () => {
+                // Esta fuente se elimina sola al devolver SOURCE_REMOVE: hay que
+                // soltar el ID guardado. Si no, el siguiente _scheduleNextUpdate()
+                // intenta source_remove() de un ID que ya no existe y GLib registra
+                // "Source ID N was not found" en cada ciclo (cientos por hora).
+                this._timeoutId = null;
                 this._updateIcons();
                 return GLib.SOURCE_REMOVE;
             }
@@ -244,10 +308,15 @@ class PingIndicator extends PanelMenu.Button {
     //   - Se pierde la conexión del todo               -> error
     //   - El semáforo empeora, o se vuelve inestable    -> warning
     //   - El semáforo mejora, o se estabiliza           -> info
-    _logTransitions(label, prevTier, newTier, prevUnstable, newUnstable, stats) {
+    //
+    // tierChange / unstableChange son {previous, current} ya CONFIRMADOS por un
+    // StateDebouncer (varias mediciones seguidas), o null si no hubo cambio.
+    _logTransitions(label, tierChange, unstableChange, stats) {
         const sinConexion = !stats || stats.avg < 0 || stats.loss >= 100;
 
-        if (prevTier !== null && prevTier !== newTier) {
+        if (tierChange) {
+            const prevTier = tierChange.previous;
+            const newTier = tierChange.current;
             if (sinConexion) {
                 this._logEvent('error', `${label}: sin conexión`);
             } else if (TIER_RANK[newTier] > TIER_RANK[prevTier]) {
@@ -257,8 +326,8 @@ class PingIndicator extends PanelMenu.Button {
             }
         }
 
-        if (prevUnstable !== newUnstable) {
-            if (newUnstable) {
+        if (unstableChange) {
+            if (unstableChange.current) {
                 this._logEvent('warning', `${label} detectado inestable (pérdida ${stats.loss}%, jitter ${stats.mdev.toFixed(1)}ms)`);
             } else {
                 this._logEvent('info', `${label} se estabilizó`);
@@ -320,16 +389,20 @@ class PingIndicator extends PanelMenu.Button {
         const pingCount = Math.max(1, this._settings.get_int('ping-count'));
 
         if (!gatewayAddress || gatewayAddress === '') {
-            if (!this.gateway) {
-                this.gateway = await this._getDefaultGateway();
-            }
+            // Se consulta en CADA ciclo (es un `ip route` instantáneo): al
+            // cambiar de red (Wi-Fi ↔ hotspot del celular, VPN, cable) el
+            // gateway cambia. Antes se guardaba la primera vez y no se volvía
+            // a leer, así que tras el cambio seguía haciendo ping al gateway
+            // de la red anterior y el router salía "sin conexión" (--)
+            // aunque internet funcionara, hasta volver a la red original.
+            this.gateway = await this._getDefaultGateway();
         } else {
             this.gateway = gatewayAddress;
         }
 
         const [localStats, internetStats] = await Promise.all([
             this.gateway ? pingBurst(this.gateway, pingCount) : Promise.resolve(null),
-            pingBurst(internetAddress || 'google.com', pingCount),
+            pingBurst(internetAddress || DEFAULT_INTERNET_HOST, pingCount),
         ]);
 
         this._lastLocalStats = localStats;
@@ -338,7 +411,7 @@ class PingIndicator extends PanelMenu.Button {
 
         try {
             this._updateIconsAndTooltip();
-            this._maybeRunMtr(internetAddress || 'google.com');
+            this._maybeRunMtr(internetAddress || DEFAULT_INTERNET_HOST);
         } catch (e) {
             this._onDisposedWidget(e);
             return;
@@ -425,14 +498,20 @@ class PingIndicator extends PanelMenu.Button {
         this._localUnstable = isUnstable(this._lastLocalStats, localLoss, localJitter);
         this._internetUnstable = isUnstable(this._lastInternetStats, internetLoss, internetJitter);
 
+        // Se revisa también en cada ciclo para que la insignia de Wi-Fi se
+        // apague sola cuando los saltos salen de la ventana de detección.
+        this._updateWifiBadge();
+
         // Registrar en el log/historial cualquier cambio de estado respecto
         // a la medición anterior, antes de sobreescribir el "prev".
-        this._logTransitions('Router', this._prevLocalTier, localTier, this._prevLocalUnstable, this._localUnstable, this._lastLocalStats);
-        this._logTransitions('Internet', this._prevInternetTier, internetTier, this._prevInternetUnstable, this._internetUnstable, this._lastInternetStats);
-        this._prevLocalTier = localTier;
-        this._prevInternetTier = internetTier;
-        this._prevLocalUnstable = this._localUnstable;
-        this._prevInternetUnstable = this._internetUnstable;
+        this._logTransitions('Router',
+            this._localTierDebounce.update(localTier),
+            this._localUnstableDebounce.update(this._localUnstable),
+            this._lastLocalStats);
+        this._logTransitions('Internet',
+            this._internetTierDebounce.update(internetTier),
+            this._internetUnstableDebounce.update(this._internetUnstable),
+            this._lastInternetStats);
 
         // Usado por _scheduleNextUpdate() para acelerar la cadencia mientras
         // esto siga así.
@@ -447,6 +526,7 @@ class PingIndicator extends PanelMenu.Button {
         } else if (this._mtrRunning) {
             tooltipText += `\n\nCorriendo diagnóstico mtr en segundo plano...`;
         }
+        tooltipText += this._wifiTooltipLine();
 
         // Aplicar iconos: el color/forma viene del semáforo; la insignia de
         // inestabilidad viene horneada en un segundo SVG por tier
@@ -520,8 +600,228 @@ class PingIndicator extends PanelMenu.Button {
         if (this._lastMtrSummary) {
             tooltipText += `\n\nÚltimo diagnóstico mtr:\n${this._lastMtrSummary}`;
         }
+        tooltipText += this._wifiTooltipLine();
 
         this.setTooltipText(tooltipText);
+    }
+
+    // ------------------------------------------------------------------
+    // Wi-Fi: saltos entre puntos de acceso de la misma red
+    // ------------------------------------------------------------------
+
+    async _startWifi() {
+        if (this._disposed) return;
+        if (!this._settings.get_boolean('wifi-watch-enabled')) {
+            this._stopWifi();
+            return;
+        }
+        if (this._wifi) return;
+        try {
+            const {WifiWatcher} = await import('./wifi.js');
+            if (this._disposed || this._wifi) return;
+            this._wifi = new WifiWatcher(ev => this._onRoam(ev), () => this._onWifiLost());
+            this._wifi.start();
+            this._wifiSubMenu.visible = true;
+        } catch (e) {
+            console.error(`[ping-indicator] Wi-Fi: no se pudo iniciar el monitoreo de puntos de acceso: ${e}`);
+        }
+    }
+
+    // Apagado desde las preferencias: además de soltar el watcher, esconde la
+    // insignia y el submenú. (stop() usa solo _stopWifiWatcher: al cerrar no se
+    // deben tocar widgets que quizá ya estén destruidos.)
+    _stopWifi() {
+        this._stopWifiWatcher();
+        this._roamEvents = [];
+        this._wifiFlapping = false;
+        if (this._disposed) return;
+        this.roamIcon.visible = false;
+        this._wifiSubMenu.visible = false;
+    }
+
+    _stopWifiWatcher() {
+        if (this._wifi) {
+            this._wifi.stop();
+            this._wifi = null;
+        }
+    }
+
+    // ev = {time, ssid, from, to}: un salto entre dos puntos de acceso de la
+    // misma red. Cada salto queda en el historial/journal; que haya "rebote"
+    // (varios seguidos) lo decide _updateWifiBadge con los umbrales de ajustes.
+    _onRoam(ev) {
+        if (this._disposed) return;
+        this._roamEvents.push(ev);
+        const desc = ap => `${ap.band} canal ${ap.channel} (${ap.bssid.slice(-5)})`;
+        // Dos bandas del MISMO equipo (2.4 ↔ 5 GHz) o dos equipos distintos
+        // (router + repetidor): el arreglo no es el mismo, por eso se distingue.
+        const kind = sameDevice(ev.from.bssid, ev.to.bssid)
+            ? 'cambió de banda en el mismo equipo'
+            : 'cambió de equipo';
+        this._logEvent('info', `Wi-Fi "${ev.ssid}": ${kind}, ${desc(ev.from)} → ${desc(ev.to)}`);
+        try {
+            this._updateWifiBadge();
+        } catch (e) {
+            this._onDisposedWidget(e);
+        }
+    }
+
+    // El Wi-Fi se quedó sin punto de acceso. Si hay un punto fijo y tras unos
+    // segundos sigue sin conexión y ese punto ya no está a la vista, se suelta
+    // el fijo para que NetworkManager pueda usar cualquier otro punto de la
+    // red. Un solo temporizador a la vez; si en el ínterin se reconecta, al
+    // vencer no hay nada que soltar (ver releasePinIfLost).
+    _onWifiLost() {
+        if (this._disposed || this._wifiLostTimerId) return;
+        if (!this._settings.get_boolean('pin-auto-release')) return;
+
+        const delay = Math.max(5, this._settings.get_int('pin-release-delay'));
+        this._wifiLostTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
+            this._wifiLostTimerId = 0;
+            if (this._disposed || !this._wifi) return GLib.SOURCE_REMOVE;
+            this._wifi.releasePinIfLost(PIN_RELEASE_MIN_STRENGTH, (released, error) => {
+                if (this._disposed) return;
+                if (error) {
+                    this._logEvent('error', `Wi-Fi: no se pudo soltar el punto de acceso fijo: ${error.message ?? error}`);
+                } else if (released) {
+                    this._logEvent('warning', 'Wi-Fi: el punto de acceso fijo ya no está al alcance, se volvió a modo automático');
+                    Main.notify('Ping Indicator', 'El punto de acceso fijo salió de alcance: Wi-Fi vuelve a modo automático');
+                }
+            });
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _updateWifiBadge() {
+        if (this._disposed) return;
+        const now = GLib.get_monotonic_time() / 1000000;
+        const threshold = Math.max(2, this._settings.get_int('roam-flap-threshold'));
+        const windowSec = Math.max(30, this._settings.get_int('roam-flap-window'));
+        const result = detectFlapping(this._roamEvents, now, threshold, windowSec);
+
+        // Los saltos viejos (fuera de la ventana) ya no sirven para nada.
+        this._roamEvents = result.recent;
+        this._wifiFlapCount = result.count;
+
+        if (result.flapping !== this._wifiFlapping) {
+            this._wifiFlapping = result.flapping;
+            if (result.flapping) {
+                this._logEvent('warning', `Wi-Fi: saltando entre puntos de acceso (${result.count} cambios en ${Math.round(windowSec / 60)} min). Puedes fijar uno desde el menú → Wi-Fi.`);
+            } else {
+                this._logEvent('info', 'Wi-Fi: dejó de saltar entre puntos de acceso');
+            }
+        }
+        this.roamIcon.visible = this._wifiFlapping;
+    }
+
+    _wifiTooltipLine() {
+        if (!this._wifiFlapping) return '';
+        return `\n\n⚠ Wi-Fi: saltando entre puntos de acceso (${this._wifiFlapCount} cambios recientes). Menú → Wi-Fi para fijar uno.`;
+    }
+
+    _rebuildWifiMenu() {
+        if (this._disposed || !this._wifi) return;
+        const menu = this._wifiSubMenu.menu;
+        menu.removeAll();
+
+        const addInfo = text => {
+            const item = new PopupMenu.PopupMenuItem(text);
+            item.actor.reactive = false;
+            item.label.clutter_text.set_line_wrap(true);
+            menu.addMenuItem(item);
+        };
+
+        const snap = this._wifi.snapshot();
+        if (!snap) {
+            this._wifiSubMenu.label.text = 'Wi-Fi';
+            addInfo('Sin adaptador Wi-Fi');
+            return;
+        }
+
+        const groups = groupByNetwork(snap.aps);
+        const mine = snap.ssid ? groups.find(g => g.ssid === snap.ssid) : null;
+        const flag = this._wifiFlapping ? '⚠ ' : '';
+        this._wifiSubMenu.label.text = snap.ssid ? `${flag}Wi-Fi: ${snap.ssid}` : 'Wi-Fi: sin conexión';
+
+        if (mine) {
+            const several = mine.aps.length > 1;
+            // "Equipo N": los BSSID que comparten prefijo son bandas del mismo
+            // equipo (ver wifi-logic.js), para distinguir un cambio de banda
+            // de un cambio entre equipos distintos.
+            const {numbers, count: deviceCount} = deviceNumbers(mine.aps);
+            if (several) {
+                addInfo(this._wifiFlapping
+                    ? `⚠ Saltando entre puntos de acceso (${this._wifiFlapCount} cambios recientes)`
+                    : `Esta red la emiten ${mine.aps.length} puntos de acceso (${deviceCount} equipo${deviceCount > 1 ? 's' : ''})`);
+            }
+            addInfo(snap.pinned
+                ? `Modo: fijo en ${snap.pinned}` + (this._settings.get_boolean('pin-auto-release')
+                    ? ' (vuelve a automático si sales de su alcance)' : '')
+                : 'Modo: automático (el sistema decide a qué punto conectarse)');
+            menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            for (const ap of mine.aps) {
+                let text = `${several ? `Equipo ${numbers.get(ap.bssid)} · ` : ''}${ap.band} · canal ${ap.channel} · ${ap.strength}% · ${ap.bssid}`;
+                if (ap.active) text += ' — conectado';
+                if (snap.pinned === ap.bssid) text += ' — fijo';
+                const item = new PopupMenu.PopupMenuItem(text);
+                item.setOrnament(ap.active ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+                if (several && snap.pinned !== ap.bssid) {
+                    item.connect('activate', () => this._pinAp(ap.bssid));
+                } else {
+                    item.actor.reactive = false;
+                }
+                menu.addMenuItem(item);
+            }
+            if (several) {
+                addInfo('Tocar un punto de acceso lo fija (se reconecta ahora).');
+            }
+            if (snap.pinned) {
+                const auto = new PopupMenu.PopupMenuItem('Automático — permitir que el sistema cambie de punto');
+                auto.connect('activate', () => this._pinAp(null));
+                menu.addMenuItem(auto);
+            }
+        } else {
+            addInfo('No estás conectado a una red Wi-Fi');
+        }
+
+        const others = groups.filter(g => g.ssid !== snap.ssid).slice(0, 8);
+        if (others.length > 0) {
+            menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            addInfo('Otras redes visibles:');
+            for (const g of others) {
+                addInfo(`${g.ssid} — ${g.best}%${g.aps.length > 1 ? ` · ${g.aps.length} puntos de acceso` : ''}`);
+            }
+        }
+    }
+
+    // bssid = null vuelve a modo automático.
+    _pinAp(bssid) {
+        if (!this._wifi) return;
+        this._wifi.pin(bssid, error => {
+            if (this._disposed) return;
+            if (error) {
+                const reason = error.message ?? `${error}`;
+                this._logEvent('error', `Wi-Fi: no se pudo ${bssid ? 'fijar' : 'liberar'} el punto de acceso: ${reason}`);
+                Main.notify('Ping Indicator', `No se pudo cambiar el modo Wi-Fi: ${reason}`);
+                return;
+            }
+            // El rebote se corta al fijar: la insignia no debe seguir
+            // encendida hasta que expire la ventana.
+            this._roamEvents = [];
+            this._logEvent('info', bssid
+                ? `Wi-Fi: fijado al punto de acceso ${bssid}`
+                : 'Wi-Fi: modo automático restaurado');
+            Main.notify('Ping Indicator', bssid
+                ? `Wi-Fi fijado a ${bssid}. Reconectando…`
+                : 'Wi-Fi en modo automático');
+            try {
+                this._updateWifiBadge();
+                this._rebuildWifiMenu();
+            } catch (e) {
+                this._onDisposedWidget(e);
+            }
+        });
     }
 
     // Se llama la primera (y única) vez que una actualización choca con un
@@ -547,6 +847,15 @@ class PingIndicator extends PanelMenu.Button {
         if (this._cosmeticHandlers) {
             this._cosmeticHandlers.forEach(id => this._settings.disconnect(id));
             this._cosmeticHandlers = null;
+        }
+        if (this._wifiHandler) {
+            this._settings.disconnect(this._wifiHandler);
+            this._wifiHandler = null;
+        }
+        this._stopWifiWatcher();
+        if (this._wifiLostTimerId) {
+            GLib.source_remove(this._wifiLostTimerId);
+            this._wifiLostTimerId = 0;
         }
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);

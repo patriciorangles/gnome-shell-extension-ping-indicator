@@ -6,7 +6,9 @@ EXT_DIR="$HOME/.local/share/gnome-shell/extensions/ping-indicator@patriciorangle
 mkdir -p "$EXT_DIR/schemas"
 
 # Copiar archivos
-cp extension.js netcheck.js metadata.json prefs.js "$EXT_DIR/"
+# stylesheet.css también: sin él los estilos (tamaño del número, espacios) no
+# se aplican y el widget se ve con los valores por defecto del panel.
+cp extension.js netcheck.js wifi.js wifi-logic.js metadata.json prefs.js stylesheet.css "$EXT_DIR/"
 # rm+cp (no solo cp -r) para que los íconos que ya no existen en el repo
 # no se queden colgados en la instalación de versiones anteriores.
 rm -rf "$EXT_DIR/icons"

@@ -16,9 +16,10 @@
 
 .ping-label {
     font-feature-settings: "tnum";
-    /* Para que combine con el tamaño de CPU/batería del panel, no con el
-       tamaño de texto normal (que se ve más grande al lado de esos). */
-    font-size: 0.8em;
+    /* Igual que el monitor del sistema del panel (CPU/memoria/red): su
+       .system-monitor-stat-section-label usa font-size: 0.9em. Con el tamaño
+       normal el número se ve más grande al lado de esos. */
+    font-size: 0.9em;
 }
 
 .ping-local-icon,

@@ -28,7 +28,14 @@ const PrefsKeys = {
     MTR_COOLDOWN: 'mtr-cooldown',
 
     // Presentación
-    SHOW_NUMERIC_LABELS: 'show-numeric-labels'
+    SHOW_NUMERIC_LABELS: 'show-numeric-labels',
+
+    // Wi-Fi: saltos entre puntos de acceso de la misma red
+    WIFI_WATCH_ENABLED: 'wifi-watch-enabled',
+    ROAM_FLAP_THRESHOLD: 'roam-flap-threshold',
+    ROAM_FLAP_WINDOW: 'roam-flap-window',
+    PIN_AUTO_RELEASE: 'pin-auto-release',
+    PIN_RELEASE_DELAY: 'pin-release-delay'
 };
 
 export default class PingIndicatorPreferences extends ExtensionPreferences {
@@ -312,6 +319,53 @@ export default class PingIndicatorPreferences extends ExtensionPreferences {
         settings.bind(PrefsKeys.MTR_COOLDOWN, mtrCooldownRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         mtrGroup.add(mtrCooldownRow);
 
+        // 8. Wi-Fi: saltos entre puntos de acceso
+        const wifiGroup = new Adw.PreferencesGroup({
+            title: _('Wi-Fi: saltos entre puntos de acceso'),
+            description: _('Cuando varios equipos (router + repetidor/mesh) emiten la misma red y la laptop salta entre ellos, la conexión se corta unos segundos en cada salto. Aquí se define cuándo avisarlo con un ícono en el panel; desde el menú → Wi-Fi puedes fijar un punto de acceso.')
+        });
+
+        const wifiEnabledRow = new Adw.SwitchRow({
+            title: _('Vigilar saltos entre puntos de acceso'),
+            subtitle: _('Muestra el submenú Wi-Fi y el ícono de aviso')
+        });
+        settings.bind(PrefsKeys.WIFI_WATCH_ENABLED, wifiEnabledRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(wifiEnabledRow);
+
+        const roamThresholdRow = new Adw.SpinRow({
+            title: _('Saltos para avisar'),
+            subtitle: _('Cuántos saltos dentro de la ventana cuentan como rebote'),
+            adjustment: new Gtk.Adjustment({ lower: 2, upper: 20, step_increment: 1 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.ROAM_FLAP_THRESHOLD, roamThresholdRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(roamThresholdRow);
+
+        const roamWindowRow = new Adw.SpinRow({
+            title: _('Ventana de detección (segundos)'),
+            subtitle: _('El ícono se apaga solo cuando los saltos salen de esta ventana'),
+            adjustment: new Gtk.Adjustment({ lower: 30, upper: 3600, step_increment: 30 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.ROAM_FLAP_WINDOW, roamWindowRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(roamWindowRow);
+
+        const pinReleaseRow = new Adw.SwitchRow({
+            title: _('Soltar el punto fijo si sales de su alcance'),
+            subtitle: _('Con un punto de acceso fijo, el Wi-Fi no se conecta al otro punto de la misma red. Si te desconectas y el fijo ya no está a la vista, se vuelve solo a automático')
+        });
+        settings.bind(PrefsKeys.PIN_AUTO_RELEASE, pinReleaseRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(pinReleaseRow);
+
+        const pinReleaseDelayRow = new Adw.SpinRow({
+            title: _('Espera antes de soltarlo (segundos)'),
+            subtitle: _('Tiempo desconectado antes de comprobar si el punto fijo sigue al alcance'),
+            adjustment: new Gtk.Adjustment({ lower: 5, upper: 300, step_increment: 5 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.PIN_RELEASE_DELAY, pinReleaseDelayRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(pinReleaseDelayRow);
+
         // Ensamblar páginas
         generalPage.add(generalGroup);
         thresholdsPage.add(localThresholdsGroup);
@@ -320,6 +374,7 @@ export default class PingIndicatorPreferences extends ExtensionPreferences {
         stabilityPage.add(localStabilityGroup);
         stabilityPage.add(internetStabilityGroup);
         stabilityPage.add(mtrGroup);
+        stabilityPage.add(wifiGroup);
 
         window.add(generalPage);
         window.add(thresholdsPage);

@@ -74,5 +74,27 @@
       <default>true</default>
       <summary>Show the latency value in ms next to each icon</summary>
     </key>
+
+    <!-- Wi-Fi: saltos entre puntos de acceso de la misma red -->
+    <key name="wifi-watch-enabled" type="b">
+      <default>true</default>
+      <summary>Watch for Wi-Fi switching between access points of the same network</summary>
+    </key>
+    <key name="roam-flap-threshold" type="i">
+      <default>2</default>
+      <summary>Switches between access points (within the window) that count as flapping</summary>
+    </key>
+    <key name="roam-flap-window" type="i">
+      <default>300</default>
+      <summary>Seconds in which access point switches are counted</summary>
+    </key>
+    <key name="pin-auto-release" type="b">
+      <default>true</default>
+      <summary>Go back to automatic when the pinned access point is out of range</summary>
+    </key>
+    <key name="pin-release-delay" type="i">
+      <default>30</default>
+      <summary>Seconds disconnected before releasing a pinned access point that is out of range</summary>
+    </key>
   </schema>
 </schemalist>

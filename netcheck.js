@@ -68,7 +68,10 @@ export async function runCommandAsync(argv, timeoutSeconds = 8) {
 // ping-count en la configuración), con un piso de 6s para ráfagas chicas.
 export async function pingBurst(host, count) {
     const timeoutSeconds = Math.max(6, Math.ceil(count * 1.5) + 3);
-    const output = await runCommandAsync(['ping', '-c', String(count), '-i', '0.2', '-W', '1', host], timeoutSeconds);
+    // -n: sin resolución inversa de DNS (una consulta lenta no debe contar como
+    // "red caída"). Por la misma razón el destino por defecto es una IP y no un
+    // nombre: -W solo limita la espera de la respuesta, no la resolución del nombre.
+    const output = await runCommandAsync(['ping', '-n', '-c', String(count), '-i', '0.2', '-W', '1', host], timeoutSeconds);
     if (!output) return null;
 
     const lossMatch = output.match(/(\d+)% packet loss/);
@@ -107,14 +110,69 @@ export function parseMtrHops(text) {
     return hops;
 }
 
+// Ubica el salto responsable. Regla estándar de lectura de mtr: la pérdida de
+// un salto intermedio solo es real si se mantiene en TODOS los saltos
+// siguientes; si más adelante vuelve a 0%, ese salto solo está limitando las
+// respuestas ICMP (muy común en routers de proveedor) y el tráfico real pasa
+// bien. Por eso `loss` del resultado es la pérdida EFECTIVA (el mínimo de ese
+// salto en adelante) y `rawLoss` la que mtr midió en ese salto.
+// - Con pérdida efectiva: el PRIMER salto donde empieza (el punto de corte).
+// - Sin pérdida efectiva: el de mayor jitter.
 export function findWorstHop(hops) {
-    const candidates = hops.filter(h => h.hop > 1 && h.host !== '???');
+    const effective = hops.map((h, i) => ({
+        ...h,
+        rawLoss: h.loss,
+        loss: Math.min(...hops.slice(i).map(x => x.loss)),
+    }));
+    const candidates = effective.filter(h => h.hop > 1 && h.host !== '???');
     if (candidates.length === 0) return null;
     return candidates.reduce((worst, h) => {
         if (h.loss > worst.loss) return h;
-        if (h.loss === worst.loss && h.stdev > worst.stdev) return h;
+        if (h.loss === 0 && worst.loss === 0 && h.stdev > worst.stdev) return h;
         return worst;
     });
+}
+
+// Confirma un cambio de estado solo cuando el valor nuevo se repite `needed`
+// mediciones SEGUIDAS. Evita llenar el historial cuando una métrica oscila
+// alrededor de un umbral (p. ej. Excelente ↔ Aceptable cada ciclo). La primera
+// medición se toma como estado inicial, sin generar cambio. update() devuelve
+// {previous, current} cuando se confirma un cambio, o null.
+export class StateDebouncer {
+    constructor(needed = 3) {
+        this._needed = needed;
+        this._started = false;
+        this._committed = null;
+        this._candidate = null;
+        this._count = 0;
+    }
+
+    update(value) {
+        if (!this._started) {
+            this._started = true;
+            this._committed = value;
+            return null;
+        }
+        if (value === this._committed) {
+            this._candidate = null;
+            this._count = 0;
+            return null;
+        }
+        if (value === this._candidate) {
+            this._count++;
+        } else {
+            this._candidate = value;
+            this._count = 1;
+        }
+        if (this._count >= this._needed) {
+            const previous = this._committed;
+            this._committed = value;
+            this._candidate = null;
+            this._count = 0;
+            return {previous, current: value};
+        }
+        return null;
+    }
 }
 
 // Nivel por latencia promedio — good/medium/bad, el semáforo de siempre.
