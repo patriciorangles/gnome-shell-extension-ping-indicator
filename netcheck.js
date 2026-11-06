@@ -138,9 +138,14 @@ export function findWorstHop(hops) {
 // alrededor de un umbral (p. ej. Excelente ↔ Aceptable cada ciclo). La primera
 // medición se toma como estado inicial, sin generar cambio. update() devuelve
 // {previous, current} cuando se confirma un cambio, o null.
+//
+// neededFor(nuevo, actual) es opcional: permite exigir un número distinto de
+// mediciones según el cambio (p. ej. confirmar rápido un corte total, que es
+// poco ambiguo, y despacio un vaivén de umbral). Sin ella, siempre `needed`.
 export class StateDebouncer {
-    constructor(needed = 3) {
+    constructor(needed = 3, neededFor = null) {
         this._needed = needed;
+        this._neededFor = neededFor;
         this._started = false;
         this._committed = null;
         this._candidate = null;
@@ -164,7 +169,8 @@ export class StateDebouncer {
             this._candidate = value;
             this._count = 1;
         }
-        if (this._count >= this._needed) {
+        const needed = this._neededFor ? this._neededFor(value, this._committed) : this._needed;
+        if (this._count >= needed) {
             const previous = this._committed;
             this._committed = value;
             this._candidate = null;
@@ -173,6 +179,22 @@ export class StateDebouncer {
         }
         return null;
     }
+}
+
+// Cuántas mediciones seguidas confirman el cambio de estado `from` -> `to` del
+// semáforo, según los ajustes {state, enter, leave}. El corte total ('down') se
+// trata aparte: entrar y salir tienen su propio número. Nunca menos de 1.
+export function confirmationsFor(to, from, {state, enter, leave}) {
+    if (to === 'down') return Math.max(1, enter);
+    if (from === 'down') return Math.max(1, leave);
+    return Math.max(1, state);
+}
+
+// Corte total: no hay respuesta de nada en la ráfaga (o ni siquiera hubo
+// medición). Es un estado aparte del semáforo: se confirma y se anota más
+// rápido que un simple cambio de nivel.
+export function isOutage(stats) {
+    return !stats || stats.avg < 0 || stats.loss >= 100;
 }
 
 // Nivel por latencia promedio — good/medium/bad, el semáforo de siempre.

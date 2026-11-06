@@ -90,11 +90,32 @@
     </key>
     <key name="pin-auto-release" type="b">
       <default>true</default>
-      <summary>Go back to automatic when the pinned access point is out of range</summary>
+      <summary>Go back to automatic when the pinned access point stops being useful (unreachable or weak)</summary>
+    </key>
+    <key name="pin-release-on-sleep" type="b">
+      <default>true</default>
+      <summary>Release the pinned access point when the laptop suspends</summary>
     </key>
     <key name="pin-release-delay" type="i">
       <default>30</default>
       <summary>Seconds disconnected before releasing a pinned access point that is out of range</summary>
+    </key>
+
+    <!-- Novedades: cuántas mediciones seguidas confirman un cambio de estado -->
+    <key name="state-confirmations" type="i">
+      <default>3</default>
+      <range min="1" max="10"/>
+      <summary>Consecutive measurements to log a state change (threshold flapping)</summary>
+    </key>
+    <key name="outage-enter-confirmations" type="i">
+      <default>2</default>
+      <range min="1" max="10"/>
+      <summary>Consecutive no-response bursts to log a total outage</summary>
+    </key>
+    <key name="outage-leave-confirmations" type="i">
+      <default>1</default>
+      <range min="1" max="10"/>
+      <summary>Consecutive responding bursts to log the recovery from a total outage</summary>
     </key>
   </schema>
 </schemalist>

@@ -35,7 +35,13 @@ const PrefsKeys = {
     ROAM_FLAP_THRESHOLD: 'roam-flap-threshold',
     ROAM_FLAP_WINDOW: 'roam-flap-window',
     PIN_AUTO_RELEASE: 'pin-auto-release',
-    PIN_RELEASE_DELAY: 'pin-release-delay'
+    PIN_RELEASE_DELAY: 'pin-release-delay',
+    PIN_RELEASE_ON_SLEEP: 'pin-release-on-sleep',
+
+    // Novedades: confirmación de cambios de estado
+    STATE_CONFIRMATIONS: 'state-confirmations',
+    OUTAGE_ENTER_CONFIRMATIONS: 'outage-enter-confirmations',
+    OUTAGE_LEAVE_CONFIRMATIONS: 'outage-leave-confirmations'
 };
 
 export default class PingIndicatorPreferences extends ExtensionPreferences {
@@ -319,6 +325,39 @@ export default class PingIndicatorPreferences extends ExtensionPreferences {
         settings.bind(PrefsKeys.MTR_COOLDOWN, mtrCooldownRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         mtrGroup.add(mtrCooldownRow);
 
+        // 8a. Novedades: cuántas mediciones seguidas confirman un cambio de estado
+        const confirmGroup = new Adw.PreferencesGroup({
+            title: _('Novedades: confirmación de cambios'),
+            description: _('Cuántas mediciones seguidas deben repetirse para que un cambio de estado se anote en "Novedades" y en el journal. Más mediciones = menos ruido pero se anota más tarde; el ícono del panel siempre cambia en tiempo real. Con 1 se anota al instante.')
+        });
+
+        const stateConfirmRow = new Adw.SpinRow({
+            title: _('Cambios de nivel o de inestabilidad'),
+            subtitle: _('Para vaivenes alrededor de un umbral (p. ej. Excelente ↔ Aceptable)'),
+            adjustment: new Gtk.Adjustment({ lower: 1, upper: 10, step_increment: 1 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.STATE_CONFIRMATIONS, stateConfirmRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        confirmGroup.add(stateConfirmRow);
+
+        const outageEnterRow = new Adw.SpinRow({
+            title: _('Corte total: confirmar con (ráfagas sin respuesta)'),
+            subtitle: _('Con 1 se anota al primer ping fallido, pero un microcorte de ~1 s también contaría'),
+            adjustment: new Gtk.Adjustment({ lower: 1, upper: 10, step_increment: 1 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.OUTAGE_ENTER_CONFIRMATIONS, outageEnterRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        confirmGroup.add(outageEnterRow);
+
+        const outageLeaveRow = new Adw.SpinRow({
+            title: _('Recuperación del corte: confirmar con (ráfagas que responden)'),
+            subtitle: _('Con 1 se anota en cuanto vuelve a responder'),
+            adjustment: new Gtk.Adjustment({ lower: 1, upper: 10, step_increment: 1 }),
+            digits: 0
+        });
+        settings.bind(PrefsKeys.OUTAGE_LEAVE_CONFIRMATIONS, outageLeaveRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        confirmGroup.add(outageLeaveRow);
+
         // 8. Wi-Fi: saltos entre puntos de acceso
         const wifiGroup = new Adw.PreferencesGroup({
             title: _('Wi-Fi: saltos entre puntos de acceso'),
@@ -350,16 +389,23 @@ export default class PingIndicatorPreferences extends ExtensionPreferences {
         settings.bind(PrefsKeys.ROAM_FLAP_WINDOW, roamWindowRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         wifiGroup.add(roamWindowRow);
 
+        const pinSleepRow = new Adw.SwitchRow({
+            title: _('Soltar el punto fijo al suspender'),
+            subtitle: _('Un punto fijo es una ayuda para la sesión: al cerrar la tapa puedes despertar en otro lugar, junto al otro punto de acceso, donde el fijo ya no serviría')
+        });
+        settings.bind(PrefsKeys.PIN_RELEASE_ON_SLEEP, pinSleepRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        wifiGroup.add(pinSleepRow);
+
         const pinReleaseRow = new Adw.SwitchRow({
-            title: _('Soltar el punto fijo si sales de su alcance'),
-            subtitle: _('Con un punto de acceso fijo, el Wi-Fi no se conecta al otro punto de la misma red. Si te desconectas y el fijo ya no está a la vista, se vuelve solo a automático')
+            title: _('Soltar el punto fijo cuando deje de servir'),
+            subtitle: _('Con un punto fijo el Wi-Fi no se conecta al otro punto de la misma red. Se vuelve solo a automático si te quedas sin conexión con él (no está al alcance) o si lo tienes con señal débil habiendo otro mucho mejor')
         });
         settings.bind(PrefsKeys.PIN_AUTO_RELEASE, pinReleaseRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         wifiGroup.add(pinReleaseRow);
 
         const pinReleaseDelayRow = new Adw.SpinRow({
             title: _('Espera antes de soltarlo (segundos)'),
-            subtitle: _('Tiempo desconectado antes de comprobar si el punto fijo sigue al alcance'),
+            subtitle: _('Tiempo desconectado antes de comprobar si el punto fijo sigue al alcance. Si sigue sin conectar, se vuelve a revisar con la misma cadencia y la 2ª revisión lo suelta siempre'),
             adjustment: new Gtk.Adjustment({ lower: 5, upper: 300, step_increment: 5 }),
             digits: 0
         });
@@ -373,6 +419,7 @@ export default class PingIndicatorPreferences extends ExtensionPreferences {
         stabilityPage.add(burstGroup);
         stabilityPage.add(localStabilityGroup);
         stabilityPage.add(internetStabilityGroup);
+        stabilityPage.add(confirmGroup);
         stabilityPage.add(mtrGroup);
         stabilityPage.add(wifiGroup);
 

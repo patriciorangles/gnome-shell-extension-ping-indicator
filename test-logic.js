@@ -3,7 +3,7 @@
 // StateDebouncer, findWorstHop/parseMtrHops y la identificación de equipos
 // Wi-Fi. Correr con: gjs -m test-logic.js
 
-import {parseMtrHops, findWorstHop, StateDebouncer} from './netcheck.js';
+import {parseMtrHops, findWorstHop, StateDebouncer, isOutage, confirmationsFor} from './netcheck.js';
 import {deviceKey, sameDevice, deviceNumbers} from './wifi-logic.js';
 
 function assert(condition, label) {
@@ -38,6 +38,69 @@ print('== 1. StateDebouncer ==');
     const cb = b.update(true);
     assert(cb && cb.previous === false && cb.current === true, 'funciona con booleanos (false es un estado válido)');
 }
+
+print('== 1b. StateDebouncer con neededFor (corte total rápido, vaivén lento) ==');
+{
+    // La MISMA función que usa extension.js, con los valores por defecto del
+    // esquema: entrar en 'down' = 2, salir de 'down' = 1, el resto = 3.
+    const defaults = {state: 3, enter: 2, leave: 1};
+    const rule = (to, from) => confirmationsFor(to, from, defaults);
+    const d = new StateDebouncer(3, rule);
+    d.update('good');                                              // estado inicial
+
+    assert(d.update('down') === null, 'una sola ráfaga sin respuesta todavía no se anota (microcorte)');
+    const down = d.update('down');
+    assert(down && down.previous === 'good' && down.current === 'down', 'la 2ª ráfaga seguida confirma el corte (no 3)');
+
+    const back = d.update('good');
+    assert(back && back.previous === 'down' && back.current === 'good', 'la 1ª ráfaga buena ya anota la recuperación');
+
+    // Un microcorte aislado no genera nada.
+    const e = new StateDebouncer(3, rule);
+    e.update('good'); e.update('down');
+    assert(e.update('good') === null, 'microcorte de 1 ráfaga: ni "sin conexión" ni "recuperó"');
+
+    // El vaivén de umbral sigue exigiendo 3.
+    const f = new StateDebouncer(3, rule);
+    f.update('good');
+    assert(f.update('medium') === null && f.update('medium') === null, 'good -> medium todavía necesita 3');
+    assert(f.update('medium') !== null, 'good -> medium se confirma con la 3ª');
+
+    // Tras un corte, pasar a un estado distinto también sale rápido.
+    const g = new StateDebouncer(3, rule);
+    g.update('down');
+    const out = g.update('bad');
+    assert(out && out.previous === 'down' && out.current === 'bad', 'salir de down hacia bad también es inmediato');
+}
+print('== 1c. confirmationsFor (valores de los ajustes) ==');
+{
+    const cfg = {state: 3, enter: 2, leave: 1};
+    assert(confirmationsFor('down', 'good', cfg) === 2, 'entrar en corte usa "enter"');
+    assert(confirmationsFor('good', 'down', cfg) === 1, 'salir del corte usa "leave"');
+    assert(confirmationsFor('medium', 'good', cfg) === 3, 'cambio de nivel usa "state"');
+    assert(confirmationsFor('bad', 'down', cfg) === 1, 'down -> bad también usa "leave"');
+    assert(confirmationsFor('down', 'down', {state: 3, enter: 5, leave: 4}) === 5, '"to" = down tiene prioridad');
+    assert(confirmationsFor('down', 'good', {state: 0, enter: 0, leave: 0}) === 1, 'nunca menos de 1, aunque el ajuste sea 0');
+
+    // Con 1 en todo, todo se anota al instante.
+    const fast = {state: 1, enter: 1, leave: 1};
+    const d = new StateDebouncer(3, (to, from) => confirmationsFor(to, from, fast));
+    d.update('good');
+    assert(d.update('down') !== null, 'enter = 1: el primer ráfaga sin respuesta ya se anota');
+    assert(d.update('good') !== null, 'leave = 1: la primera que responde ya se anota');
+    assert(d.update('medium') !== null, 'state = 1: un cambio de nivel se anota al instante');
+
+    // Con valores altos, todo es más lento.
+    const slow = {state: 5, enter: 4, leave: 3};
+    const s = new StateDebouncer(3, (to, from) => confirmationsFor(to, from, slow));
+    s.update('good');
+    let n = 0;
+    while (s.update('down') === null) n++;
+    assert(n === 3, 'enter = 4: hacen falta 4 ráfagas seguidas (3 sin aviso + la 4ª que confirma)');
+}
+assert(isOutage(null), 'isOutage: sin medición = corte');
+assert(isOutage({loss: 100, avg: -1}) && isOutage({loss: 100, avg: 5}) && isOutage({loss: 0, avg: -1}), 'isOutage: 100% de pérdida o sin rtt');
+assert(!isOutage({loss: 40, avg: 80}) && !isOutage({loss: 0, avg: 3}), 'isOutage: pérdida parcial no es corte total');
 
 print('== 2. findWorstHop (pérdida efectiva) ==');
 const mtr = rows => rows.map((r, i) =>

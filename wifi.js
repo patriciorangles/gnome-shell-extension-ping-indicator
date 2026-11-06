@@ -1,20 +1,36 @@
 // Lado NetworkManager del monitoreo Wi-Fi: detecta cuándo la laptop cambia de
 // punto de acceso dentro de la MISMA red (varios equipos emitiendo el mismo
 // nombre, como un router + repetidor/mesh), lista los puntos de acceso
-// visibles y permite fijar uno (o volver a automático).
+// visibles, permite fijar uno (o volver a automático) y conectarse a otra red.
 //
 // Fijar = escribir el BSSID en el perfil de conexión de NetworkManager
 // (802-11-wireless.bssid) y reactivarlo — es lo mismo que
 //   nmcli connection modify <perfil> 802-11-wireless.bssid <BSSID>
 // Volver a automático = dejar ese campo vacío.
 //
-// La lógica pura (agrupar, detectar rebote) está en wifi-logic.js.
+// La lógica pura (agrupar, detectar rebote, cuándo soltar un punto fijo) está
+// en wifi-logic.js.
 
 import NM from 'gi://NM';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
-import {bandOf, channelOf, sameNetworkSwitch, shouldReleasePin} from './wifi-logic.js';
+import {bandOf, channelOf, classifySwitch, shouldReleasePin, isPinWeak} from './wifi-logic.js';
+
+// Tras fijar/soltar un punto de acceso, el cambio de punto que NetworkManager
+// hace a continuación lo provocamos nosotros: durante esta ventana no se cuenta
+// como salto espontáneo. 30 s cubre una reasociación lenta.
+const SELF_SWITCH_WINDOW_SECONDS = 30;
+
+// Mientras el usuario cambia de red desde el menú (puede tardar: hay que
+// escribir la contraseña), las reglas automáticas que sueltan el punto fijo no
+// deben meterse a "arreglar" la desconexión temporal.
+const MANUAL_SWITCH_SECONDS = 120;
+
+// NM_802_11_AP_FLAGS_PRIVACY: la red exige cifrado/contraseña.
+const AP_FLAG_PRIVACY = 0x1;
+
+const nowSeconds = () => GLib.get_monotonic_time() / 1000000;
 
 function apInfo(ap) {
     if (!ap) return null;
@@ -24,20 +40,27 @@ function apInfo(ap) {
     return {
         ssid,
         bssid: ap.get_bssid(),
+        path: ap.get_path(),
         freq,
         band: bandOf(freq),
         channel: channelOf(freq),
         strength: ap.get_strength(),
+        secured: (ap.get_flags() & AP_FLAG_PRIVACY) !== 0 || ap.get_wpa_flags() !== 0 || ap.get_rsn_flags() !== 0,
     };
 }
 
 export class WifiWatcher {
     // onRoam({time, ssid, from, to}) se llama en cada salto entre puntos de
     // acceso de la misma red. onLost() se llama cuando el Wi-Fi se queda sin
-    // punto de acceso (desconexión).
-    constructor(onRoam, onLost) {
+    // punto de acceso (desconexión). onSelfSwitch({time, ssid, from, to}) se
+    // llama cuando el cambio de punto lo provocó la propia extensión (fijar o
+    // soltar un punto): no cuenta como salto espontáneo.
+    constructor(onRoam, onLost, onSelfSwitch) {
         this._onRoam = onRoam;
         this._onLost = onLost;
+        this._onSelfSwitch = onSelfSwitch;
+        this._suppressUntil = 0;
+        this._manualSwitchUntil = 0;
         this._client = null;
         this._device = null;
         // Último perfil de conexión visto mientras había conexión. Hace falta
@@ -94,15 +117,39 @@ export class WifiWatcher {
         if (activeConn && activeConn.get_connection()) {
             this._profile = activeConn.get_connection();
         }
-        if (sameNetworkSwitch(this._lastKnown, current)) {
-            this._onRoam({
-                time: GLib.get_monotonic_time() / 1000000,
+        const kind = classifySwitch(this._lastKnown, current, nowSeconds(), this._suppressUntil);
+        if (kind) {
+            const ev = {
+                time: nowSeconds(),
                 ssid: current.ssid,
                 from: this._lastKnown,
                 to: current,
-            });
+            };
+            if (kind === 'self') {
+                // Ya llegó el cambio que esperábamos: se cierra la ventana para
+                // no ocultar un salto espontáneo que ocurra después.
+                this._suppressUntil = 0;
+                if (this._onSelfSwitch) this._onSelfSwitch(ev);
+            } else {
+                this._onRoam(ev);
+            }
         }
         this._lastKnown = current;
+    }
+
+    _beginSelfSwitchWindow() {
+        this._suppressUntil = nowSeconds() + SELF_SWITCH_WINDOW_SECONDS;
+    }
+
+    // ¿Hay un punto de acceso fijado en el perfil de la última conexión?
+    hasPin() {
+        const wireless = this._profile ? this._profile.get_setting_wireless() : null;
+        return !!(wireless && wireless.get_bssid());
+    }
+
+    // ¿El Wi-Fi está sin punto de acceso ahora mismo?
+    isDisconnected() {
+        return !!this._device && !this._device.get_active_access_point();
     }
 
     // Foto del momento: red actual, punto de acceso fijado (si hay) y todos
@@ -142,12 +189,19 @@ export class WifiWatcher {
         }
 
         this._profile = remote;
+        // El cambio de punto de acceso que sigue lo provocamos nosotros. Si algo
+        // falla, la ventana se cierra para no ocultar saltos espontáneos.
+        this._beginSelfSwitchWindow();
+        const fail = e => {
+            this._suppressUntil = 0;
+            done(e);
+        };
         wireless.bssid = bssid;
         remote.commit_changes_async(true, null, (_conn, res) => {
             try {
                 remote.commit_changes_finish(res);
             } catch (e) {
-                done(e);
+                fail(e);
                 return;
             }
             // Reactivar para que NetworkManager aplique el cambio ahora.
@@ -156,33 +210,23 @@ export class WifiWatcher {
                     this._client.activate_connection_finish(res2);
                     done(null);
                 } catch (e) {
-                    done(e);
+                    fail(e);
                 }
             });
         });
     }
 
-    // Si el Wi-Fi está desconectado y el punto de acceso fijo ya no está a la
-    // vista (o casi sin señal), vuelve el perfil a automático. done(liberado,
-    // error). No toca nada si hay conexión o si el punto fijo sigue al alcance.
-    releasePinIfLost(minStrength, done) {
-        const device = this._device;
-        const profile = this._profile;
-        const wireless = profile ? profile.get_setting_wireless() : null;
-        if (!device || !wireless) {
+    // Quita el BSSID fijado del perfil. activate = true reconecta de inmediato
+    // (si ya hay otro punto de la misma red a la vista se conecta a él; si no
+    // hay ninguno falla sin consecuencias y NetworkManager reintenta solo);
+    // false solo guarda el cambio, para cuando se está por suspender y la
+    // reconexión la hará NetworkManager al despertar. done(liberado, error).
+    _unpinProfile(profile, activate, done) {
+        const wireless = profile.get_setting_wireless();
+        if (!wireless || !wireless.get_bssid()) {
             done(false, null);
             return;
         }
-        const lost = shouldReleasePin({
-            pinned: wireless.get_bssid(),
-            aps: device.get_access_points().map(apInfo),
-            connected: !!device.get_active_access_point(),
-        }, minStrength);
-        if (!lost) {
-            done(false, null);
-            return;
-        }
-
         wireless.bssid = null;
         profile.commit_changes_async(true, null, (_conn, res) => {
             try {
@@ -191,17 +235,109 @@ export class WifiWatcher {
                 done(false, e);
                 return;
             }
+            // La reconexión que sigue la provocamos nosotros (ver pin()).
+            if (activate) this._beginSelfSwitchWindow();
             done(true, null);
-            // Si ya hay otro punto de la misma red a la vista, conectar ahora.
-            // Si no hay ninguno, falla y no pasa nada: NetworkManager reintenta
-            // solo cuando aparezca uno.
-            if (this._stopped || !this._client) return;
-            this._client.activate_connection_async(profile, device, null, null, (_client, res2) => {
+            if (!activate || this._stopped || !this._client || !this._device) return;
+            this._client.activate_connection_async(profile, this._device, null, null, (_client, res2) => {
                 try {
                     this._client.activate_connection_finish(res2);
                 } catch (e) { /* sin punto disponible todavía */ }
             });
         });
+    }
+
+    // Suelta el punto fijo del perfil actual sin condiciones (suspensión).
+    releasePin(activate, done) {
+        if (!this._profile) {
+            done(false, null);
+            return;
+        }
+        this._unpinProfile(this._profile, activate, done);
+    }
+
+    // Desconectado con un punto fijo: lo suelta si ya no está a la vista (o casi
+    // sin señal) y, pasadas varias revisiones seguidas sin conectar, siempre
+    // (ver shouldReleasePin). No toca nada si hay conexión, ni mientras el
+    // usuario está cambiando de red a mano. done(liberado, error).
+    releasePinIfLost(minStrength, checks, done) {
+        const device = this._device;
+        const profile = this._profile;
+        const wireless = profile ? profile.get_setting_wireless() : null;
+        if (!device || !wireless || nowSeconds() < this._manualSwitchUntil) {
+            done(false, null);
+            return;
+        }
+        const lost = shouldReleasePin({
+            pinned: wireless.get_bssid(),
+            aps: device.get_access_points().map(apInfo),
+            connected: !!device.get_active_access_point(),
+            checks,
+        }, minStrength);
+        if (!lost) {
+            done(false, null);
+            return;
+        }
+        this._unpinProfile(profile, true, done);
+    }
+
+    // ¿El punto fijo actual es malo (señal baja) habiendo otro de la misma red
+    // mucho mejor? Ver isPinWeak.
+    isPinWeak(weakBelow, margin) {
+        const snap = this.snapshot();
+        if (!snap) return false;
+        return isPinWeak({pinned: snap.pinned, aps: snap.aps}, weakBelow, margin);
+    }
+
+    // Perfil de conexión Wi-Fi ya guardado en NetworkManager para esa red, o null.
+    savedProfileFor(ssid) {
+        if (!this._client) return null;
+        for (const conn of this._client.get_connections()) {
+            const wireless = conn.get_setting_wireless();
+            if (!wireless) continue;
+            const bytes = wireless.get_ssid();
+            if (bytes && NM.utils_ssid_to_utf8(bytes.get_data()) === ssid) return conn;
+        }
+        return null;
+    }
+
+    // Conecta a otra red. apPath = punto de acceso a usar (el de mejor señal).
+    // Con perfil guardado lo activa; sin perfil, NetworkManager crea uno para
+    // ese punto de acceso y, si hace falta contraseña, la pide al agente de
+    // GNOME Shell (el mismo diálogo del menú de red del sistema).
+    // done(error|null, 'saved'|'new').
+    connectTo(ssid, apPath, done) {
+        const device = this._device;
+        if (!device || !this._client) {
+            done(new Error('no hay adaptador Wi-Fi'));
+            return;
+        }
+        this._manualSwitchUntil = nowSeconds() + MANUAL_SWITCH_SECONDS;
+        const fail = e => {
+            this._manualSwitchUntil = 0;
+            done(e);
+        };
+
+        const profile = this.savedProfileFor(ssid);
+        if (profile) {
+            this._client.activate_connection_async(profile, device, apPath, null, (_client, res) => {
+                try {
+                    this._client.activate_connection_finish(res);
+                    done(null, 'saved');
+                } catch (e) {
+                    fail(e);
+                }
+            });
+        } else {
+            this._client.add_and_activate_connection_async(null, device, apPath, null, (_client, res) => {
+                try {
+                    this._client.add_and_activate_connection_finish(res);
+                    done(null, 'new');
+                } catch (e) {
+                    fail(e);
+                }
+            });
+        }
     }
 
     // OJO: en NM.Device, disconnect() es un método propio (desconectar el

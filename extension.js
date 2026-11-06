@@ -11,33 +11,36 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import {runCommandAsync, pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable, StateDebouncer} from './netcheck.js';
+import {runCommandAsync, pingBurst, parseMtrHops, findWorstHop, latencyTier, isUnstable, isOutage, confirmationsFor, StateDebouncer} from './netcheck.js';
 import {detectFlapping, groupByNetwork, sameDevice, deviceNumbers} from './wifi-logic.js';
 // wifi.js (la parte que habla con NetworkManager) se carga aparte y con
 // try/catch en _startWifi(): si algo falla ahí, el ping sigue funcionando.
 
-// Orden de severidad de cada tier, para saber si un cambio es una mejora o
-// un empeoramiento (y decidir el nivel del log: info al mejorar, warning al
-// empeorar).
 // Señal (%) por debajo de la cual el punto de acceso fijo se considera "perdido".
 const PIN_RELEASE_MIN_STRENGTH = 15;
+
+// Punto fijo "débil": con conexión pero señal por debajo de PIN_WEAK_BELOW (%)
+// mientras otro punto de la misma red se ve al menos PIN_WEAK_MARGIN puntos mejor,
+// de forma sostenida durante PIN_WEAK_SECONDS. Típico al moverte hacia el otro
+// equipo con la laptop abierta.
+const PIN_WEAK_BELOW = 30;
+const PIN_WEAK_MARGIN = 25;
+const PIN_WEAK_SECONDS = 20;
 
 // Destino de internet cuando el ajuste está vacío. Una IP y no un nombre: con
 // "google.com" cada ping dependía del DNS, y un DNS lento colgaba la ráfaga
 // (hubo cientos de "no respondió, se forzó a terminar" por hora).
 const DEFAULT_INTERNET_HOST = '8.8.8.8';
 
-// Mediciones seguidas necesarias para que un cambio de estado (semáforo o
-// inestabilidad) llegue a "Novedades" y al journal. El ícono sigue cambiando en
-// tiempo real; esto solo evita llenar el historial cuando una métrica oscila
-// alrededor de un umbral (llegó a haber 104 avisos Excelente ↔ Aceptable por hora).
-const STATE_CONFIRMATIONS = 3;
-
 // Segundos que dura la vista previa de la insignia ("Probar ícono").
 const PREVIEW_SECONDS = 8;
 
-const TIER_RANK = {good: 0, medium: 1, bad: 2};
-const TIER_LABEL = {good: 'Excelente', medium: 'Aceptable', bad: 'Crítico'};
+// Orden de severidad de cada tier, para saber si un cambio es una mejora o
+// un empeoramiento (y decidir el nivel del log: info al mejorar, warning al
+// empeorar). 'down' (corte total) solo existe para el historial/journal: el
+// ícono sigue usando good/medium/bad.
+const TIER_RANK = {good: 0, medium: 1, bad: 2, down: 3};
+const TIER_LABEL = {good: 'Excelente', medium: 'Aceptable', bad: 'Crítico', down: 'Sin conexión'};
 const LEVEL_ICON = {info: 'ℹ', warning: '⚠', error: '⛔'};
 
 export default class PingIndicatorExtension extends Extension {
@@ -91,10 +94,12 @@ class PingIndicator extends PanelMenu.Button {
         // genera un falso "cambio".
         this._history = [];
         this._maxHistory = 30;
-        this._localTierDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
-        this._internetTierDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
-        this._localUnstableDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
-        this._internetUnstableDebounce = new StateDebouncer(STATE_CONFIRMATIONS);
+        // Cuántas mediciones seguidas hacen falta para anotar un cambio de
+        // estado se lee de los ajustes en cada medición (se aplica al instante).
+        this._localTierDebounce = new StateDebouncer(3, (to, from) => this._tierConfirmations(to, from));
+        this._internetTierDebounce = new StateDebouncer(3, (to, from) => this._tierConfirmations(to, from));
+        this._localUnstableDebounce = new StateDebouncer(3, () => this._stateConfirmations());
+        this._internetUnstableDebounce = new StateDebouncer(3, () => this._stateConfirmations());
 
         // Wi-Fi: saltos entre puntos de acceso con el mismo nombre (ver wifi.js).
         // this._roamEvents guarda solo los saltos dentro de la ventana de
@@ -107,6 +112,11 @@ class PingIndicator extends PanelMenu.Button {
         // la muestra unos segundos sin tocar el estado real de rebote.
         this._badgePreview = false;
         this._badgePreviewId = 0;
+        // Reglas que sueltan solas el punto fijo cuando deja de servir.
+        this._lostChecks = 0;          // revisiones seguidas desconectado con punto fijo
+        this._pinWeakSince = 0;        // desde cuándo el punto fijo es "débil" (s, monotónico)
+        this._sleepSubId = 0;          // suscripción a PrepareForSleep (logind)
+        this._resumeTimerId = 0;
 
         this.box = new St.BoxLayout({
             style_class: 'dual-ping-box'
@@ -291,6 +301,27 @@ class PingIndicator extends PanelMenu.Button {
         );
     }
 
+    // Mediciones seguidas que confirman un cambio de estado antes de que llegue
+    // a "Novedades" y al journal. El ícono sigue cambiando en tiempo real; esto
+    // solo evita llenar el historial cuando una métrica oscila alrededor de un
+    // umbral (llegó a haber 104 avisos Excelente ↔ Aceptable por hora).
+    _stateConfirmations() {
+        return Math.max(1, this._settings.get_int('state-confirmations'));
+    }
+
+    // Igual, pero para el semáforo, donde el corte total ('down') se trata aparte:
+    //  - entrar en corte: pocas ráfagas (una sola podría ser un microcorte de ~1 s);
+    //  - salir del corte: la primera ráfaga que responde ya es la recuperación y
+    //    no tiene por qué anotarse con 10-15 s de retraso;
+    //  - cualquier otro cambio (vaivén de umbral): state-confirmations.
+    _tierConfirmations(to, from) {
+        return confirmationsFor(to, from, {
+            state: this._settings.get_int('state-confirmations'),
+            enter: this._settings.get_int('outage-enter-confirmations'),
+            leave: this._settings.get_int('outage-leave-confirmations'),
+        });
+    }
+
     // Registra una novedad: la escribe en el journal del sistema (con el
     // nivel correspondiente, para poder filtrar con "journalctl -p warning")
     // y la guarda en el historial en memoria que alimenta el submenú
@@ -319,13 +350,14 @@ class PingIndicator extends PanelMenu.Button {
     // tierChange / unstableChange son {previous, current} ya CONFIRMADOS por un
     // StateDebouncer (varias mediciones seguidas), o null si no hubo cambio.
     _logTransitions(label, tierChange, unstableChange, stats) {
-        const sinConexion = !stats || stats.avg < 0 || stats.loss >= 100;
-
         if (tierChange) {
             const prevTier = tierChange.previous;
             const newTier = tierChange.current;
-            if (sinConexion) {
+            if (newTier === 'down') {
                 this._logEvent('error', `${label}: sin conexión`);
+            } else if (prevTier === 'down' && newTier === 'bad') {
+                // Respondió otra vez, pero con latencia crítica: no es una recuperación plena.
+                this._logEvent('warning', `${label} volvió a responder, pero en estado ${TIER_LABEL[newTier]}`);
             } else if (TIER_RANK[newTier] > TIER_RANK[prevTier]) {
                 this._logEvent('warning', `${label} pasó a estado ${TIER_LABEL[newTier]}`);
             } else {
@@ -419,6 +451,7 @@ class PingIndicator extends PanelMenu.Button {
         try {
             this._updateIconsAndTooltip();
             this._maybeRunMtr(internetAddress || DEFAULT_INTERNET_HOST);
+            this._maybeReleaseWeakPin();
         } catch (e) {
             this._onDisposedWidget(e);
             return;
@@ -512,11 +545,11 @@ class PingIndicator extends PanelMenu.Button {
         // Registrar en el log/historial cualquier cambio de estado respecto
         // a la medición anterior, antes de sobreescribir el "prev".
         this._logTransitions('Router',
-            this._localTierDebounce.update(localTier),
+            this._localTierDebounce.update(isOutage(this._lastLocalStats) ? 'down' : localTier),
             this._localUnstableDebounce.update(this._localUnstable),
             this._lastLocalStats);
         this._logTransitions('Internet',
-            this._internetTierDebounce.update(internetTier),
+            this._internetTierDebounce.update(isOutage(this._lastInternetStats) ? 'down' : internetTier),
             this._internetUnstableDebounce.update(this._internetUnstable),
             this._lastInternetStats);
 
@@ -626,8 +659,12 @@ class PingIndicator extends PanelMenu.Button {
         try {
             const {WifiWatcher} = await import('./wifi.js');
             if (this._disposed || this._wifi) return;
-            this._wifi = new WifiWatcher(ev => this._onRoam(ev), () => this._onWifiLost());
+            this._wifi = new WifiWatcher(
+                ev => this._onRoam(ev),
+                () => this._onWifiLost(),
+                ev => this._onSelfSwitch(ev));
             this._wifi.start();
+            this._subscribeSleep();
             this._wifiSubMenu.visible = true;
         } catch (e) {
             console.error(`[ping-indicator] Wi-Fi: no se pudo iniciar el monitoreo de puntos de acceso: ${e}`);
@@ -647,10 +684,107 @@ class PingIndicator extends PanelMenu.Button {
     }
 
     _stopWifiWatcher() {
+        this._unsubscribeSleep();
+        if (this._resumeTimerId) {
+            GLib.source_remove(this._resumeTimerId);
+            this._resumeTimerId = 0;
+        }
         if (this._wifi) {
             this._wifi.stop();
             this._wifi = null;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // El punto fijo no debe sobrevivir a una suspensión
+    // ------------------------------------------------------------------
+    // Escenario real: fijo un punto, cierro la laptop, me muevo junto al OTRO
+    // punto, la abro: el perfil sigue limitado al punto de antes (ahora lejos) y
+    // no hay conexión estable. Un punto fijo es una ayuda para la sesión, no una
+    // decisión permanente: se suelta al suspender.
+
+    _subscribeSleep() {
+        if (this._sleepSubId) return;
+        this._sleepSubId = Gio.DBus.system.signal_subscribe(
+            'org.freedesktop.login1', 'org.freedesktop.login1.Manager', 'PrepareForSleep',
+            '/org/freedesktop/login1', null, Gio.DBusSignalFlags.NONE,
+            (_conn, _sender, _path, _iface, _signal, params) => {
+                const [sleeping] = params.deep_unpack();
+                if (sleeping) this._onGoingToSleep();
+                else this._onResumed();
+            });
+    }
+
+    _unsubscribeSleep() {
+        if (this._sleepSubId) {
+            Gio.DBus.system.signal_unsubscribe(this._sleepSubId);
+            this._sleepSubId = 0;
+        }
+    }
+
+    // Antes de suspender: solo se guarda el cambio en el perfil (sin reconectar);
+    // al despertar NetworkManager ya conecta con el perfil en automático, al
+    // mejor punto de donde estés, sin una reconexión extra.
+    _onGoingToSleep() {
+        if (this._disposed || !this._wifi) return;
+        if (!this._settings.get_boolean('pin-release-on-sleep') || !this._wifi.hasPin()) return;
+        this._wifi.releasePin(false, (released, error) => {
+            if (this._disposed) return;
+            if (error) {
+                this._logEvent('error', `Wi-Fi: no se pudo soltar el punto fijo antes de suspender: ${error.message ?? error}`);
+            } else if (released) {
+                this._logEvent('info', 'Wi-Fi: punto de acceso fijo soltado antes de suspender (al volver puedes estar en otro lugar)');
+            }
+        });
+    }
+
+    // Red de seguridad: si al despertar el perfil sigue con punto fijo (no se
+    // alcanzó a guardar el cambio al suspender), se suelta y se reconecta.
+    _onResumed() {
+        if (this._disposed || !this._wifi || this._resumeTimerId) return;
+        if (!this._settings.get_boolean('pin-release-on-sleep')) return;
+        this._resumeTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
+            this._resumeTimerId = 0;
+            if (this._disposed || !this._wifi || !this._wifi.hasPin()) return GLib.SOURCE_REMOVE;
+            this._wifi.releasePin(true, (released, error) => {
+                if (this._disposed) return;
+                if (error) {
+                    this._logEvent('error', `Wi-Fi: no se pudo soltar el punto fijo al reanudar: ${error.message ?? error}`);
+                } else if (released) {
+                    this._logEvent('warning', 'Wi-Fi: punto de acceso fijo soltado al reanudar (podías estar en otro lugar)');
+                    Main.notify('Ping Indicator', 'Se soltó el punto de acceso fijo al reanudar: Wi-Fi en modo automático');
+                }
+            });
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // Conectado al punto fijo pero con mala señal, habiendo otro de la misma red
+    // mucho mejor de forma sostenida: el fijo ya no sirve. Se evalúa en cada ciclo.
+    _maybeReleaseWeakPin() {
+        if (this._disposed || !this._wifi) return;
+        if (!this._settings.get_boolean('pin-auto-release') ||
+            !this._wifi.isPinWeak(PIN_WEAK_BELOW, PIN_WEAK_MARGIN)) {
+            this._pinWeakSince = 0;
+            return;
+        }
+        const now = GLib.get_monotonic_time() / 1000000;
+        if (!this._pinWeakSince) {
+            this._pinWeakSince = now;
+            return;
+        }
+        if (now - this._pinWeakSince < PIN_WEAK_SECONDS) return;
+
+        this._pinWeakSince = 0;
+        this._wifi.releasePin(true, (released, error) => {
+            if (this._disposed) return;
+            if (error) {
+                this._logEvent('error', `Wi-Fi: no se pudo soltar el punto fijo débil: ${error.message ?? error}`);
+            } else if (released) {
+                this._logEvent('warning', 'Wi-Fi: el punto de acceso fijo tiene señal débil y hay otro mucho mejor, se volvió a modo automático');
+                Main.notify('Ping Indicator', 'El punto de acceso fijo tiene señal débil: Wi-Fi vuelve a modo automático');
+            }
+        });
     }
 
     // ev = {time, ssid, from, to}: un salto entre dos puntos de acceso de la
@@ -673,28 +807,46 @@ class PingIndicator extends PanelMenu.Button {
         }
     }
 
-    // El Wi-Fi se quedó sin punto de acceso. Si hay un punto fijo y tras unos
-    // segundos sigue sin conexión y ese punto ya no está a la vista, se suelta
-    // el fijo para que NetworkManager pueda usar cualquier otro punto de la
-    // red. Un solo temporizador a la vez; si en el ínterin se reconecta, al
-    // vencer no hay nada que soltar (ver releasePinIfLost).
+    // El cambio de punto de acceso lo provocó la propia extensión (fijar o
+    // soltar un punto desde el menú, o la liberación automática). Se anota en
+    // el historial para que se entienda, pero NO cuenta para el rebote.
+    _onSelfSwitch(ev) {
+        if (this._disposed) return;
+        const desc = ap => `${ap.band} canal ${ap.channel} (${ap.bssid.slice(-5)})`;
+        this._logEvent('info', `Wi-Fi "${ev.ssid}": reconectado a ${desc(ev.to)} (cambio hecho desde el indicador, no cuenta como salto)`);
+    }
+
+    // El Wi-Fi se quedó sin punto de acceso. Si hay un punto fijo y sigue sin
+    // conexión, se revisa cada `pin-release-delay` segundos MIENTRAS dure la
+    // desconexión (antes era una sola revisión: si en ese momento la lista de
+    // puntos aún mostraba el fijo como "visible", jamás se volvía a mirar). La
+    // 1ª revisión suelta el fijo si ya no está a la vista; desde la 2ª, siempre
+    // (ver shouldReleasePin). Un solo temporizador a la vez: se detiene solo al
+    // reconectar, al soltar el fijo o al desactivar la opción.
     _onWifiLost() {
         if (this._disposed || this._wifiLostTimerId) return;
         if (!this._settings.get_boolean('pin-auto-release')) return;
 
+        this._lostChecks = 0;
         const delay = Math.max(5, this._settings.get_int('pin-release-delay'));
         this._wifiLostTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
-            this._wifiLostTimerId = 0;
-            if (this._disposed || !this._wifi) return GLib.SOURCE_REMOVE;
-            this._wifi.releasePinIfLost(PIN_RELEASE_MIN_STRENGTH, (released, error) => {
+            if (this._disposed || !this._wifi || !this._wifi.isDisconnected() || !this._wifi.hasPin()) {
+                this._wifiLostTimerId = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            this._lostChecks++;
+            this._wifi.releasePinIfLost(PIN_RELEASE_MIN_STRENGTH, this._lostChecks, (released, error) => {
                 if (this._disposed) return;
                 if (error) {
                     this._logEvent('error', `Wi-Fi: no se pudo soltar el punto de acceso fijo: ${error.message ?? error}`);
                 } else if (released) {
-                    this._logEvent('warning', 'Wi-Fi: el punto de acceso fijo ya no está al alcance, se volvió a modo automático');
-                    Main.notify('Ping Indicator', 'El punto de acceso fijo salió de alcance: Wi-Fi vuelve a modo automático');
+                    this._logEvent('warning', 'Wi-Fi: sin conexión con el punto de acceso fijo, se volvió a modo automático');
+                    Main.notify('Ping Indicator', 'El punto de acceso fijo no está al alcance: Wi-Fi vuelve a modo automático');
                 }
             });
+            // Si se soltó, hasPin() ya es false (el perfil se limpia al instante).
+            if (this._wifi.hasPin()) return GLib.SOURCE_CONTINUE;
+            this._wifiLostTimerId = 0;
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -786,8 +938,8 @@ class PingIndicator extends PanelMenu.Button {
                     : `Esta red la emiten ${mine.aps.length} puntos de acceso (${deviceCount} equipo${deviceCount > 1 ? 's' : ''})`);
             }
             addInfo(snap.pinned
-                ? `Modo: fijo en ${snap.pinned}` + (this._settings.get_boolean('pin-auto-release')
-                    ? ' (vuelve a automático si sales de su alcance)' : '')
+                ? `Modo: fijo en ${snap.pinned}` + (this._settings.get_boolean('pin-auto-release') || this._settings.get_boolean('pin-release-on-sleep')
+                    ? ' (se suelta solo al suspender o si deja de servir)' : '')
                 : 'Modo: automático (el sistema decide a qué punto conectarse)');
             menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -816,12 +968,18 @@ class PingIndicator extends PanelMenu.Button {
             addInfo('No estás conectado a una red Wi-Fi');
         }
 
-        const others = groups.filter(g => g.ssid !== snap.ssid).slice(0, 8);
+        const others = groups.filter(g => g.ssid !== snap.ssid).slice(0, 12);
         if (others.length > 0) {
             menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            addInfo('Otras redes visibles:');
+            addInfo('Otras redes visibles (toca una para conectarte):');
             for (const g of others) {
-                addInfo(`${g.ssid} — ${g.best}%${g.aps.length > 1 ? ` · ${g.aps.length} puntos de acceso` : ''}`);
+                // 🔒 = protegida (pedirá contraseña si no está guardada).
+                const lock = g.aps[0].secured ? '🔒 ' : '';
+                const saved = this._wifi.savedProfileFor(g.ssid) ? ' · guardada' : '';
+                const several = g.aps.length > 1 ? ` · ${g.aps.length} puntos de acceso` : '';
+                const item = new PopupMenu.PopupMenuItem(`${lock}${g.ssid} — ${g.best}%${several}${saved}`);
+                item.connect('activate', () => this._connectNetwork(g));
+                menu.addMenuItem(item);
             }
         }
 
@@ -829,6 +987,26 @@ class PingIndicator extends PanelMenu.Button {
         const preview = new PopupMenu.PopupMenuItem(`Probar ícono de rebote (${PREVIEW_SECONDS} s)`);
         preview.connect('activate', () => this._previewBadge());
         menu.addMenuItem(preview);
+    }
+
+    // Conecta a otra red de la lista. Se usa el punto de acceso de mejor señal
+    // de esa red (groupByNetwork los deja ordenados). Si la red no está guardada
+    // y es protegida, el agente de GNOME Shell pide la contraseña con su
+    // diálogo de siempre.
+    _connectNetwork(group) {
+        if (!this._wifi) return;
+        const target = group.aps[0];
+        Main.notify('Ping Indicator', `Conectando a "${group.ssid}"…`);
+        this._wifi.connectTo(group.ssid, target.path, (error, kind) => {
+            if (this._disposed) return;
+            if (error) {
+                const reason = error.message ?? `${error}`;
+                this._logEvent('error', `Wi-Fi: no se pudo conectar a "${group.ssid}": ${reason}`);
+                Main.notify('Ping Indicator', `No se pudo conectar a "${group.ssid}": ${reason}`);
+                return;
+            }
+            this._logEvent('info', `Wi-Fi: conectando a "${group.ssid}" (${target.band}, ${target.strength}%)${kind === 'new' ? ', red sin perfil guardado' : ''}`);
+        });
     }
 
     // bssid = null vuelve a modo automático.
